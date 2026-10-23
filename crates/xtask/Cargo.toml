@@ -1,0 +1,15 @@
+[package]
+name = "xtask"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+nxcore.workspace = true
+anyhow.workspace = true
+flate2 = "1"
+tar = "0.4"
+zstd = { version = "0.13", features = ["zstdmt"] }
+reqwest = { version = "0.13", features = ["blocking"] }
+sha2 = "0.11"

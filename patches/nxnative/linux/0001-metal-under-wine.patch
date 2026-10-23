@@ -1,0 +1,58 @@
+diff --git a/dm/linux/bin/xcrun b/dm/linux/bin/xcrun
+new file mode 100755
+index 0000000..5895e9e
+--- /dev/null
++++ b/dm/linux/bin/xcrun
+@@ -0,0 +1,52 @@
++#!/usr/bin/env python3
++# xcrun for Linux: only what the shader chain asks of it (dmsh_build.py, ios_metal.py, dmsh_chain.py), `xcrun -sdk <macosx|iphoneos> <metal|metallib> ...`, run by Apple's
++# Metal Developer Tools for Windows under wine. The NSP script puts dm/linux/bin first in PATH on Linux (dm/linux/README.md).
++#   DM_METAL_WIN = the tools' install folder (default: "Metal Developer Tools" under the wine prefix's Program Files); the compiler is <folder>/<ios|macos>/bin/metal.exe
++#   (or <folder>/bin/metal.exe; version 6 has its compiler in <folder>/metal/<version>/bin), metallib.exe beside it. WINEPREFIX picks the prefix as for wine itself.
++# The Windows tools take the same options as the Mac's, but the target triple is given with -target (air64-apple-ios<min> / air64-apple-macos<min>), not by the SDK:
++# -mios-version-min=X becomes -target air64-apple-iosX. Absolute paths are passed as Z: paths (wine maps / to Z:).
++import glob, os, subprocess, sys
++
++MAC_MIN = '15.0'   # xcrun -sdk macosx metal with no minimum targets the running macOS; the Mac libraries are never packed into the IPA
++
++
++def die(msg):
++    sys.exit(f'xcrun (dm/linux): {msg}')
++
++
++def tools_root():
++    if os.environ.get('DM_METAL_WIN'): return os.environ['DM_METAL_WIN']
++    prefix = os.environ.get('WINEPREFIX') or os.path.expanduser('~/.wine')
++    for pf in ('Program Files', 'Program Files (x86)'):
++        d = os.path.join(prefix, 'drive_c', pf, 'Metal Developer Tools')
++        if os.path.isdir(d): return d
++    die('no Metal Developer Tools for Windows: install them with wine (developer.apple.com/download/all, "Metal Developer Tools for Windows"), or set DM_METAL_WIN')
++
++
++def exe(sdk, tool):   # the compiler itself (6.x: metal/<version>/bin) before bin/'s launcher of it, which costs 4 s a call under wine
++    root = tools_root()
++    inner = sorted(glob.glob(os.path.join(root, 'metal', '*', 'bin')))
++    for d in inner[-1:] + [os.path.join(root, 'ios' if sdk == 'iphoneos' else 'macos', 'bin'), os.path.join(root, 'bin')]:
++        p = os.path.join(d, tool + '.exe')
++        if os.path.isfile(p): return p
++    die(f'no {tool}.exe for {sdk} under {root}')
++
++
++def win(a):   # an absolute Unix path → its Z: path
++    return 'Z:' + a.replace('/', '\\') if a.startswith('/') else a
++
++
++a = sys.argv[1:]
++sdk = 'macosx'
++if a[:1] == ['-sdk'] and len(a) > 1: sdk, a = a[1], a[2:]
++if sdk not in ('macosx', 'iphoneos'): die(f'unsupported SDK {sdk}')
++if not a or a[0] not in ('metal', 'metallib'): die(f'only metal and metallib are supported, not {" ".join(a[:1])}')
++tool, args = a[0], a[1:]
++out = []
++if tool == 'metal' and '--version' not in args:
++    mn = next((x.split('=', 1)[1] for x in args if x.startswith('-mios-version-min=')), None)
++    args = [x for x in args if not x.startswith('-mios-version-min=')]
++    out += ['-target', f'air64-apple-ios{mn or "18.0"}' if sdk == 'iphoneos' else f'air64-apple-macos{MAC_MIN}']
++out += [win(x) for x in args]
++env = dict(os.environ, WINEDEBUG=os.environ.get('WINEDEBUG', '-all'))
++sys.exit(subprocess.run(['wine', exe(sdk, tool), *out], env=env).returncode)

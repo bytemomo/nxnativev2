@@ -1,0 +1,22 @@
+[workspace]
+resolver = "3"
+members = ["crates/nxcore", "crates/nxcli", "crates/nxapp", "crates/xtask"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[workspace.dependencies]
+nxcore = { path = "crates/nxcore" }
+anyhow = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io-util", "sync", "time", "fs"] }
+
+[profile.release]
+debug = "line-tables-only"
+
+# the packaged app (cargo xtask bundle): no debug info, symbols stripped
+[profile.dist]
+inherits = "release"
+debug = false
+strip = "symbols"

@@ -1,0 +1,390 @@
+diff --git a/dm/ios/tools/build_app_linux.py b/dm/ios/tools/build_app_linux.py
+new file mode 100755
+index 0000000..60722d6
+--- /dev/null
++++ b/dm/ios/tools/build_app_linux.py
+@@ -0,0 +1,169 @@
++#!/usr/bin/env python3
++# The unsigned DmIOS.app on Linux, where there is no Xcode: what xcodebuild makes of project.yml (Release, iPhone + iPad), with clang and ld64.lld against the iOS SDK that xtool installs
++# from Xcode.xip (xtool sdk install <Xcode.xip>; dm/linux/README.md). build_ipa.sh calls it after generating Gen/ (gen_build.py, gen_embed.py), instead of xcodegen and xcodebuild.
++#   The compile flags are the project's (project.yml settings and xcodegen's presets: -Os, ARC for Objective-C, gnu11, modules, -mcpu=apple-a18, warnings off) plus Gen/dm.xcconfig's;
++#   Info.plist holds project.yml's info properties and the keys Xcode adds; the app icon is PNG files named in Info.plist (CFBundleIcons) in place of an asset catalog, which needs actool.
++#   Each compile writes a "CompileC <source>" line and the link an "Ld" line to stdout, as xcodebuild's log does (the NSP script counts them).
++# Usage: build_app_linux.py <dm/ios or the project folder holding Gen/ and Sources/> <output DmIOS.app> <objects folder>; build_app_linux.py --find-sdk prints the SDK it would use
++#   Environment: DM_BUNDLE_ID, DM_DISPLAY_NAME, DM_APP_VERSION, DM_APP_CATEGORY, DM_SHOW_FPS (YES / NO), DM_LANG (set by build_ipa.sh); DM_ICON = the icon image (optional, needs Pillow);
++#   DM_IOS_SDK = the iPhoneOS SDK folder (default: the one in xtool's Darwin Swift SDK); J = parallel compiles
++#   Swift sources (Sources/*.swift, e.g. Launcher.swift) are compiled by swiftc into one object (module DmIOS) against the SDK and Xcode's Swift resource
++#   folder (the toolchain's usr/lib/swift: its iphoneos part, apinotes and clang headers; the SDK's Swift interfaces need it, a Linux toolchain's own does not fit):
++#   DM_SWIFT_RESOURCES = that folder (default: <SDK>/../swift-resources, else the one in xtool's Darwin Swift SDK); DM_SWIFT_OBJECT = the Swift sources compiled
++#   ahead of time into that one object (an arm64 iOS object, the same on every computer: a packaged build ships it, and needs no swiftc)
++import concurrent.futures as cf, glob, hashlib, os, plistlib, re, shlex, shutil, subprocess, sys
++
++MIN_IOS = '26.0'   # project.yml deploymentTarget (Metal 4)
++ARCH_FLAGS = ['-target', f'arm64-apple-ios{MIN_IOS}', '-mcpu=apple-a18']   # project.yml OTHER_CFLAGS: the host assembly has LSE atomics
++# diagnostics that upstream clang makes errors and Xcode's clang still reports as warnings (which the project turns off): the sources build as they do in Xcode
++COMPAT = ['-Wno-error=incompatible-pointer-types']
++# UIKit side of the app (Sources/) and what the host's sources import beyond dm/host/Makefile's frameworks (its Mac list has Cocoa, which gen_build.py leaves out)
++APP_FRAMEWORKS = ['UIKit', 'Foundation', 'CoreGraphics', 'CoreText', 'CoreMotion', 'CoreFoundation', 'AVFAudio', 'AVFoundation']
++
++
++def die(msg):
++    sys.exit(f'[RED] build_app_linux: {msg}')
++
++
++def find_sdk():
++    if os.environ.get('DM_IOS_SDK'): return os.environ['DM_IOS_SDK']
++    home = os.path.expanduser('~')
++    pats = [f'{home}/.swiftpm/swift-sdks/darwin.artifactbundle/**/iPhoneOS*.sdk', f'{home}/.xtool/**/iPhoneOS*.sdk', f'{home}/.local/share/xtool/**/iPhoneOS*.sdk',
++            f'{home}/.config/swiftpm/swift-sdks/**/iPhoneOS*.sdk']
++    for p in pats:
++        hits = sorted(h for h in glob.glob(p, recursive=True) if os.path.isfile(os.path.join(h, 'SDKSettings.json')))
++        if hits: return hits[-1]
++    die('no iPhoneOS SDK: install xtool\'s Darwin SDK from Xcode 26 (xtool sdk install <Xcode.xip>), or set DM_IOS_SDK to an iPhoneOS.sdk folder')
++
++
++def find_swift_resources(sdk):
++    if os.environ.get('DM_SWIFT_RESOURCES'): return os.environ['DM_SWIFT_RESOURCES']
++    beside = os.path.join(os.path.dirname(os.path.realpath(sdk)), 'swift-resources')
++    if os.path.isdir(os.path.join(beside, 'iphoneos')): return beside
++    xt = os.path.expanduser('~/.config/swiftpm/swift-sdks/darwin.artifactbundle/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift')
++    if os.path.isdir(os.path.join(xt, 'iphoneos')): return xt
++    die('Swift sources need Xcode\'s Swift resource folder (the toolchain\'s usr/lib/swift): set DM_SWIFT_RESOURCES')
++
++
++def compile_swift(proj, sdk, obj):
++    """The app's Swift sources as one object (whole module), or None without any"""
++    files = sorted(os.path.join(proj, 'Sources', f) for f in os.listdir(os.path.join(proj, 'Sources')) if f.endswith('.swift'))
++    if not files: return None
++    if os.environ.get('DM_SWIFT_OBJECT'):
++        if not os.path.isfile(os.environ['DM_SWIFT_OBJECT']): die(f'no prebuilt Swift object at {os.environ["DM_SWIFT_OBJECT"]}')
++        print('CompileSwift (prebuilt) ' + os.environ['DM_SWIFT_OBJECT'], flush=True)
++        return os.environ['DM_SWIFT_OBJECT']
++    if not shutil.which('swiftc'): die('the app has Swift sources and no swiftc was found: install Swift (swift.org)')
++    o = os.path.join(obj, 'swift_DmIOS.o')
++    print('CompileSwift ' + ' '.join(os.path.basename(f) for f in files), flush=True)
++    cmd = ['swiftc', '-target', f'arm64-apple-ios{MIN_IOS}', '-sdk', sdk, '-resource-dir', find_swift_resources(sdk), '-Xfrontend', '-enable-cross-import-overlays',
++           '-parse-as-library', '-module-name', 'DmIOS', '-O', '-wmo', '-c', *files, '-o', o]
++    r = subprocess.run(cmd, capture_output=True, text=True)
++    if r.returncode: print(r.stdout + r.stderr, flush=True); die('Swift compile failed')
++    return o
++
++
++def sdk_version(sdk):
++    try:
++        import json
++        return json.load(open(os.path.join(sdk, 'SDKSettings.json'))).get('Version', '')
++    except (OSError, ValueError): return ''
++
++
++def xcconfig(path):   # Gen/dm.xcconfig: NAME = value lines, the value's $(inherited) dropped; a repeated name adds to the earlier value (as build_ipa.sh's appended OTHER_LDFLAGS)
++    v = {}
++    for ln in open(path):
++        m = re.match(r'\s*([A-Z_]+)\s*=\s*(.*)$', ln.rstrip('\n'))
++        if m: v[m.group(1)] = (v.get(m.group(1), '') + ' ' + m.group(2).replace('$(inherited)', '')).strip()
++    for k in v: v[k] = re.sub(r'\$\((\w+)\)', lambda m: v.get(m.group(1), ''), v[k])
++    return v
++
++
++def info_plist(sdk):
++    e = os.environ
++    p = {
++        'CFBundleDevelopmentRegion': 'en', 'CFBundleExecutable': 'DmIOS', 'CFBundleIdentifier': e['DM_BUNDLE_ID'], 'CFBundleInfoDictionaryVersion': '6.0',
++        'CFBundleName': 'DmIOS', 'CFBundlePackageType': 'APPL', 'CFBundleSupportedPlatforms': ['iPhoneOS'], 'MinimumOSVersion': MIN_IOS, 'UIDeviceFamily': [1, 2],
++        'DTPlatformName': 'iphoneos', 'DTSDKName': 'iphoneos' + sdk_version(sdk), 'DTPlatformVersion': sdk_version(sdk), 'UIRequiredDeviceCapabilities': ['arm64'],
++        # project.yml info properties
++        'CFBundleDisplayName': e['DM_DISPLAY_NAME'], 'CFBundleVersion': e['DM_APP_VERSION'], 'CFBundleShortVersionString': e['DM_APP_VERSION'],
++        'UILaunchStoryboardName': '', 'UIFileSharingEnabled': True, 'LSSupportsOpeningDocumentsInPlace': True,
++        'UISupportedInterfaceOrientations': ['UIInterfaceOrientationLandscapeRight', 'UIInterfaceOrientationLandscapeLeft'],
++        'UIRequiresFullScreen': True, 'UIStatusBarHidden': True, 'UIViewControllerBasedStatusBarAppearance': False, 'LSApplicationCategoryType': e.get('DM_APP_CATEGORY', ''),
++        'DMShowFPS': e.get('DM_SHOW_FPS', 'NO'), 'DMLanguage': e.get('DM_LANG', 'en-US'), 'LSSupportsGameMode': True, 'GCSupportsControllerUserInteraction': True,
++        'GCSupportedGameControllers': [{'ProfileName': 'ExtendedGamepad'}], 'CADisableMinimumFrameDurationOnPhone': True,
++        'UIApplicationSceneManifest': {'UIApplicationSupportsMultipleScenes': False, 'UISceneConfigurations': {'UIWindowSceneSessionRoleApplication': [
++            {'UISceneConfigurationName': 'Default', 'UISceneDelegateClassName': 'SceneDelegate'}]}},
++    }
++    return p
++
++
++ICONS = (('AppIcon60x60', 120, '@2x', ''), ('AppIcon60x60', 180, '@3x', ''), ('AppIcon76x76', 152, '@2x', '~ipad'), ('AppIcon83.5x83.5', 167, '@2x', '~ipad'))
++
++
++def icons(app, plist):   # PNG icons beside the executable, named in CFBundleIcons / CFBundleIcons~ipad (actool's output without the asset catalog)
++    src = os.environ.get('DM_ICON')
++    if not src or not os.path.isfile(src): return
++    from PIL import Image
++    im = Image.open(src).convert('RGB')
++    for base, px, scale, dev in ICONS: im.resize((px, px), Image.LANCZOS).save(os.path.join(app, f'{base}{scale}{dev}.png'))
++    plist['CFBundleIcons'] = {'CFBundlePrimaryIcon': {'CFBundleIconFiles': ['AppIcon60x60'], 'CFBundleIconName': 'AppIcon'}}
++    plist['CFBundleIcons~ipad'] = {'CFBundlePrimaryIcon': {'CFBundleIconFiles': ['AppIcon60x60', 'AppIcon76x76', 'AppIcon83.5x83.5'], 'CFBundleIconName': 'AppIcon'}}
++
++
++def main():
++    if sys.argv[1:] == ['--find-sdk']: print(find_sdk()); return
++    proj, app, obj = (os.path.abspath(a) for a in sys.argv[1:4])
++    sdk = find_sdk(); gen = os.path.join(proj, 'Gen')
++    xc = xcconfig(os.path.join(gen, 'dm.xcconfig'))
++    incs = [f'-I{d}' for d in shlex.split(xc.get('HEADER_SEARCH_PATHS', ''))]
++    defs = shlex.split(xc.get('OTHER_CFLAGS', ''))
++    ldflags = shlex.split(xc.get('OTHER_LDFLAGS', ''))   # DM_FRAMEWORKS and gen_embed.py's -segprot flags
++    srcs = [(os.path.join(gen, 'src', f), []) for f in sorted(os.listdir(os.path.join(gen, 'src')))]
++    srcs += [(os.path.join(gen, 'main/main.c'), ['-Dmain=dm_main']), (os.path.join(gen, 'embed.S'), [])]
++    srcs += [(os.path.join(proj, 'Sources', f), []) for f in sorted(os.listdir(os.path.join(proj, 'Sources'))) if f.endswith(('.c', '.m', '.S'))]
++    base = ['clang', *ARCH_FLAGS, '-isysroot', sdk, '-Os', '-g0', '-w', *COMPAT, *defs, *incs, f'-I{os.path.join(proj, "Sources")}']
++    os.makedirs(obj, exist_ok=True)
++
++    def compile_one(item):
++        src, extra = item
++        real = os.path.realpath(src); ext = os.path.splitext(real)[1]
++        lang = {'.m': ['-x', 'objective-c', '-std=gnu11', '-fmodules', '-fobjc-arc'], '.c': ['-x', 'c', '-std=gnu11', '-fmodules'], '.S': ['-x', 'assembler-with-cpp']}[ext]
++        o = os.path.join(obj, hashlib.sha1(src.encode()).hexdigest()[:12] + '_' + os.path.basename(src) + '.o')
++        cmd = [*base, *lang, *extra, '-c', src, '-o', o]
++        print(f'CompileC {src}', flush=True)
++        r = subprocess.run(cmd, capture_output=True, text=True)
++        if r.returncode: return src, r.stderr[-4000:] or r.stdout[-4000:], o
++        return src, None, o
++
++    with cf.ThreadPoolExecutor(int(os.environ.get('J') or os.cpu_count() or 8)) as ex:
++        res = list(ex.map(compile_one, srcs))
++    bad = [(s, e) for s, e, _ in res if e]
++    for s, e in bad: print(f'error: {s}\n{e}', flush=True)
++    if bad: die(f'{len(bad)} of {len(srcs)} files failed to compile')
++
++    swift_o = compile_swift(proj, sdk, obj)
++    swift_link = [swift_o, '-L' + os.path.join(sdk, 'usr/lib/swift'), '-L' + os.path.join(find_swift_resources(sdk), 'iphoneos')] if swift_o else []
++    # clang's runtime for iOS, which Xcode links into every app (__isPlatformVersionAtLeast for #available / @available); a Linux clang has none
++    rt = os.path.join(find_swift_resources(sdk), 'clang/lib/darwin/libclang_rt.ios.a') if swift_o else ''
++    if rt and os.path.isfile(rt): swift_link.append(rt)
++
++    shutil.rmtree(app, ignore_errors=True); os.makedirs(app)
++    print('Ld DmIOS', flush=True)
++    fws = [x for f in APP_FRAMEWORKS for x in ('-framework', f)]
++    # no -dead_strip: ld64.lld drops sections nothing refers to by symbol, which Apple's ld64 keeps: the embedded modules (gen_embed.py, found by getsectiondata in loader.c)
++    cmd = ['clang', *ARCH_FLAGS, '-isysroot', sdk, '-fuse-ld=lld', '-o', os.path.join(app, 'DmIOS'), *[o for _, _, o in res], *swift_link, *ldflags, *fws]
++    r = subprocess.run(cmd, capture_output=True, text=True)
++    if r.returncode: print(r.stdout + r.stderr, flush=True); die('link failed')
++
++    print('CpResource Gen/dm', flush=True)
++    shutil.copytree(os.path.join(gen, 'dm'), os.path.join(app, 'dm'), symlinks=False)
++    print('ProcessInfoPlistFile Info.plist', flush=True)
++    plist = info_plist(sdk); icons(app, plist)
++    with open(os.path.join(app, 'Info.plist'), 'wb') as f: plistlib.dump(plist, f, fmt=plistlib.FMT_BINARY)
++    open(os.path.join(app, 'PkgInfo'), 'w').write('APPL????')
++    print(f'app: {app}', flush=True)
++
++
++if __name__ == '__main__':
++    main()
+diff --git a/dm/ios/tools/build_ipa.sh b/dm/ios/tools/build_ipa.sh
+index c1b6dd9..07fb0dd 100755
+--- a/dm/ios/tools/build_ipa.sh
++++ b/dm/ios/tools/build_ipa.sh
+@@ -24,6 +24,9 @@ gp() { python3 "$DM/games/game.py" "$GAME" "$1" || die "game profile $GD: $1"; }
+ PKG=$(gp package)
+ PATCHED=${PATCHED:-$W/build/patched_$PKG}; ROMFS=${ROMFS:-$W/data/$PKG/RomFS}; MSL_IOS=${MSL_IOS:-$W/build/ios/dmsh_b}; AOC=${AOC-$W/data/aoc}
+ PREPARE_XCODE=NO; [ "${1:-}" != --prepare-xcode ] || PREPARE_XCODE=YES
++# Linux (no Xcode): tools/build_app_linux.py builds the app with clang and ld64.lld against xtool's iOS SDK instead of xcodegen + xcodebuild; the icon goes in as PNG files (no actool)
++LINUX=NO; [ "$(uname -s)" = Darwin ] || LINUX=YES
++[ "$LINUX$PREPARE_XCODE" != YESYES ] || die "--prepare-xcode needs Xcode (macOS); on Linux build the IPA and sideload it"
+ OUT_IPA=${1:-$(dirname "$W")/$(gp ipa)}; O=$W/build/ios/pkg; DD=$O/dd
+ XCODE_DD=${DM_XCODE_DERIVED_DATA:-$W/build/ios/xcode-dd}
+ MODS=$(gp modules); MARKER=$(gp romfs_marker)
+@@ -76,14 +79,21 @@ if [ -n "${DM_ENV_FILE:-}" ]; then cp "$DM_ENV_FILE" Gen/dm/env.txt || die "copy
+ # The shader libraries go into the archive as DmIOS.app/msl/<folder> (main.m sets DM_MSL_DIR to it)
+ if [ "$GFXAPI" = vulkan ]; then MSLDIR=vk; elif [ "$GFXAPI" = gl ]; then MSLDIR=gl; else MSLDIR=b-$V; fi
+ # Shared-font stand-ins: standard = macOS's Arial Unicode (absent on iOS), Nintendo extension = button icons generated by make_ext_font.py (needs fontTools; FONT_PY names a python that has it)
++# (Linux: no Arial Unicode; Noto Sans, else DejaVu Sans, unless STD_FONT names a TTF)
++if [ -z "${STD_FONT:-}" ] && [ "$LINUX" = YES ]; then for f in /usr/share/fonts/noto/NotoSans-Regular.ttf /usr/share/fonts/truetype/noto/NotoSans-Regular.ttf /usr/share/fonts/TTF/DejaVuSans.ttf /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf; do
++  [ -f "$f" ] && { STD_FONT=$f; break; }; done; fi
+ mkdir -p Gen/dm/font && cp "${STD_FONT:-/System/Library/Fonts/Supplemental/Arial Unicode.ttf}" Gen/dm/font/standard.ttf || die "copy standard font (STD_FONT=a TTF)"
+-"${FONT_PY:-python3}" "$DM/tools/make_ext_font.py" Gen/dm/font/nintendo_ext.ttf > /dev/null || die "make_ext_font.py (pip install fonttools, or FONT_PY=python with fontTools)"
++# (its letters: macOS's Arial Rounded Bold, on Linux Noto Sans Bold or DejaVu Sans Bold unless LETTER_FONT names a TTF)
++if [ -z "${LETTER_FONT:-}" ] && [ "$LINUX" = YES ]; then for f in /usr/share/fonts/noto/NotoSans-Bold.ttf /usr/share/fonts/truetype/noto/NotoSans-Bold.ttf /usr/share/fonts/TTF/DejaVuSans-Bold.ttf /usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf; do
++  [ -f "$f" ] && { LETTER_FONT=$f; break; }; done; fi
++"${FONT_PY:-python3}" "$DM/tools/make_ext_font.py" Gen/dm/font/nintendo_ext.ttf ${LETTER_FONT:+"$LETTER_FONT"} > /dev/null || die "make_ext_font.py (pip install fonttools, or FONT_PY=python with fontTools)"
+ # App icon: the game's own icon (icon.jpg saved from the control data by nx_extract, the English 256x256 one). DM_ICON can point at another image; by default the icon.jpg next to the RomFS is used.
+ # It is scaled to a 1024x1024 PNG in the asset catalog Gen/Assets.xcassets (a single-size app icon; actool generates the other sizes); with neither, no icon is set and the home-screen icon is blank.
+ # The catalog is always created (the project always lists it, see project.yml); without an icon it stays empty and DM_APPICON is not set
+ ICON=${DM_ICON:-$(dirname "$ROMFS")/icon.jpg}
+ mkdir -p Gen/Assets.xcassets && printf '{"info":{"author":"xcode","version":1}}\n' > Gen/Assets.xcassets/Contents.json || die "asset catalog"
+-if [ -f "$ICON" ]; then
++if [ -f "$ICON" ] && [ "$LINUX" = YES ]; then export DM_ICON=$ICON; t "app icon: $ICON"   # build_app_linux.py writes the PNG sizes
++elif [ -f "$ICON" ]; then
+   AI=Gen/Assets.xcassets/AppIcon.appiconset; mkdir -p "$AI" || die "mkdir $AI"
+   sips -s format png -z 1024 1024 "$ICON" --out "$AI/icon.png" > /dev/null || die "sips: cannot convert the icon $ICON"
+   printf '{"images":[{"filename":"icon.png","idiom":"universal","platform":"ios","size":"1024x1024"}],"info":{"author":"xcode","version":1}}\n' > "$AI/Contents.json"
+@@ -99,8 +109,8 @@ if [ "$PREPARE_XCODE" = YES ] && [ -n "${DM_ENTITLEMENTS-default}" ]; then
+   echo "CODE_SIGN_ENTITLEMENTS = Gen/DmIOS.entitlements" >> Gen/dm.xcconfig
+   t "entitlements: $(plutil -convert json -o - Gen/DmIOS.entitlements)"
+ fi
+-xcodegen generate -q > /dev/null || die "xcodegen"
+-python3 tools/gen_resources.py "$IOS" "$ROMFS" "$MARKER" "$MSL_IOS/$MSLDIR" "$MSLDIR" "$AOC" "$XCODE_DD" "$GD/dmsh_chain.h" || die "generate Xcode resource paths"
++[ "$LINUX" = YES ] || xcodegen generate -q > /dev/null || die "xcodegen"
++[ "$LINUX" = YES ] || python3 tools/gen_resources.py "$IOS" "$ROMFS" "$MARKER" "$MSL_IOS/$MSLDIR" "$MSLDIR" "$AOC" "$XCODE_DD" "$GD/dmsh_chain.h" || die "generate Xcode resource paths"
+ if [ "$PREPARE_XCODE" = YES ]; then
+   t "Xcode project: $IOS/DmIOS.xcodeproj"
+   t "Xcode derived data: $XCODE_DD"
+@@ -109,14 +119,21 @@ if [ "$PREPARE_XCODE" = YES ]; then
+   exit 0
+ fi
+ 
+-t "xcodebuild (Release, unsigned, iPhone + iPad)"
+ mkdir -p "$O"
++if [ "$LINUX" = YES ]; then
++  t "xcodebuild stand-in: tools/build_app_linux.py (clang + ld64.lld, Release, unsigned, iPhone + iPad)"
++  APP=$DD/Build/Products/Release-iphoneos/DmIOS.app
++  "${FONT_PY:-python3}" tools/build_app_linux.py "$IOS" "$APP" "$DD/Build/Intermediates.noindex/obj" > "$O/build.log" 2>&1 \
++    || { grep -E 'error|RED' "$O/build.log" | head -20; die "build_app_linux.py, log $O/build.log"; }
++else
++t "xcodebuild (Release, unsigned, iPhone + iPad)"
+ xcodebuild -project DmIOS.xcodeproj -scheme DmIOS -configuration Release -destination 'generic/platform=iOS' -derivedDataPath "$DD" \
+   CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= DM_COPY_GAME_RESOURCES=NO \
+   DM_XCODE_OUTPUT_ROOT="$DD" SYMROOT="$DD/Build/Products" OBJROOT="$DD/Build/Intermediates.noindex" build > "$O/build.log" 2>&1 \
+   || { grep -E 'error:' "$O/build.log" | head -20; die "xcodebuild, log $O/build.log"; }
+ # SYMROOT and OBJROOT above keep the unsigned build separate from the interactive Xcode app.
+ APP=$DD/Build/Products/Release-iphoneos/DmIOS.app
++fi
+ [ -n "$APP" ] && [ -d "$APP" ] || die "no built app"; t "app: $APP"
+ 
+ # Straight from the sources: the app without its signature, and without the folders an app built before pack_ipa.py still has (DerivedData keeps resources that left the project;
+diff --git a/dm/linux/README.md b/dm/linux/README.md
+new file mode 100644
+index 0000000..572f15c
+--- /dev/null
++++ b/dm/linux/README.md
+@@ -0,0 +1,26 @@
++# Packing outside macOS (Linux)
++
++`scripts/build_ipa_from_nsp.py` also runs on Linux. Everything up to the shader split is the same code as on the Mac; these stand in for Xcode:
++
++| Mac | Linux |
++| --- | --- |
++| `xcrun -sdk iphoneos metal` / `metallib` (the shader chain) | `dm/linux/bin/xcrun`: Apple's **Metal Developer Tools for Windows** under wine, with `-target air64-apple-ios<min>` for the SDK |
++| `xcodegen` + `xcodebuild` | `dm/ios/tools/build_app_linux.py`: clang + `ld64.lld` against an iPhoneOS SDK taken from `Xcode.xip`; the icon as PNG files named in Info.plist (no `actool`) |
++| Xcode's Swift compiler (the app's `Launcher.swift`) | the Linux Swift toolchain's `swiftc` with Xcode's Swift resource folder (`DM_SWIFT_RESOURCES`: the toolchain's `usr/lib/swift`, its `iphoneos` part, `apinotes` and clang headers suffice) |
++| `dm/gfx/tools/dmsh_xlate_bin/dmsh_xlate` (a macOS launcher) | the same `dmsh_xlate.dll` run with `dotnet` (the NSP script writes a launcher in `<id>_build/tools/dmsh_xlate`) |
++| Arial Unicode / Arial Rounded Bold (shared-font stand-ins) | Noto Sans / Noto Sans Bold, else DejaVu Sans (`STD_FONT`, `LETTER_FONT` override them) |
++
++The shaders build through `dm/gfx/tools/own_compilers.py` as on the Mac: the distribution's spirv-cross and the Windows metal differ from
++`dmsh_chain.lock` and are named in one note line; the translator must still be the locked build, and the chain version stays the repository's.
++Steps that boot the game in the Mac host (a run-time shader capture, a decode with the game's own Oodle or LZ5, a provisional profile's heap
++check) need a Mac with Apple silicon and are not available here. `--prepare-xcode` needs Xcode and stops.
++
++## Setup
++
++1. Python with `lz4 capstone fonttools pillow` (`backports.zstd` before 3.14; Pillow writes the app icon).
++2. Packages: `dotnet` (SDK 10), `spirv-cross`, `zstd`, `clang` and `lld` (`ld64.lld`), `make`, `wine`, `swift` (the app has Swift sources).
++3. The iOS SDK: `DM_IOS_SDK=<iPhoneOS.sdk folder>` (e.g. extracted from Xcode 26's `.xip` by nxnativev2), or xtool's Darwin SDK (`xtool sdk install <Xcode.xip>`), which is looked up by default.
++4. The Metal compiler: **Metal Developer Tools for Windows** (6.x) installed with wine; `dm/linux/bin/xcrun` looks under
++   `$WINEPREFIX/drive_c/Program Files/Metal Developer Tools`, or `DM_METAL_WIN=<folder>`. Check: `dm/linux/bin/xcrun -sdk iphoneos metal --version`.
++
++Then: `python3 scripts/build_ipa_from_nsp.py <NSP folder> -k <prod.keys>`. The IPA is unsigned.
+diff --git a/scripts/build_ipa_from_nsp.py b/scripts/build_ipa_from_nsp.py
+index 637f529..e03fe14 100755
+--- a/scripts/build_ipa_from_nsp.py
++++ b/scripts/build_ipa_from_nsp.py
+@@ -343,6 +343,10 @@ def rmtree(p):
+ def build_nx_extract(repo, work, logs, env):
+     """Build nx_extract into <work>/tools/nx_extract/. It is built in a temporary folder and copied over: with an apostrophe in the output path (e.g. "Bowser's Fury") MSBuild's conditions break,
+     LibHac.dll and the executable are not copied, and the build still reports success"""
++    if os.environ.get('DM_NX_EXTRACT'):   # a prebuilt nx_extract (a packaged build: the .NET runtime, no SDK)
++        nx = Path(os.environ['DM_NX_EXTRACT'])
++        if not nx.exists(): raise BuildError(f'no prebuilt nx_extract at {nx}')
++        return nx
+     nx = work / 'tools/nx_extract/nx_extract'
+     with tempfile.TemporaryDirectory(prefix='nx_extract_') as t:
+         run(['dotnet', 'build', repo / 'dm/tools/nx_extract', '-c', 'Release', '-o', t, '-v', 'quiet', '-nologo'], logs / 'nx_extract_build.log', env=env)
+@@ -434,6 +438,7 @@ def pick_nsps(fam, have, versions):
+ 
+ 
+ def can_clone(d):   # whether this volume supports APFS clones (nx_extract uses them to save space; without them it writes full copies)
++    if sys.platform != 'darwin': return False   # clonefile is macOS's (Linux, Windows: full copies)
+     a, b = d / '.clone_test', d / '.clone_test2'
+     try:
+         a.write_bytes(b'x'); rmtree(b)
+@@ -689,14 +694,30 @@ def profile_files(g):   # every file of the game profile (game.tsv and its table
+ def check_prereqs(env, xlate):
+     missing = [m for m in ('lz4.block', 'capstone', 'fontTools') if not _importable(m)] + ([] if _importable('compression.zstd') or _importable('backports.zstd') else ['backports.zstd'])   # zstd: built in from Python 3.14
+     if missing: raise BuildError(f'the current Python ({sys.executable}) is missing modules: {", ".join(missing)} (pip install lz4 capstone fonttools backports.zstd; backports.zstd only before Python 3.14)')
+-    tools = {'xcodebuild': 'Xcode', 'xcodegen': 'brew install xcodegen', 'dotnet': '.NET SDK 10', 'zstd': 'brew install zstd', 'spirv-cross': 'brew install spirv-cross', 'make': 'Xcode'}
++    if sys.platform == 'darwin': tools = {'xcodebuild': 'Xcode', 'xcodegen': 'brew install xcodegen', 'dotnet': '.NET SDK 10', 'zstd': 'brew install zstd', 'spirv-cross': 'brew install spirv-cross', 'make': 'Xcode'}
++    else: tools = {'dotnet': '.NET 10', 'spirv-cross': 'spirv-cross', 'make': 'make', 'clang': 'clang', 'ld64.lld': 'lld', 'wine': 'wine (runs Apple\'s Metal Developer Tools for Windows)'}   # Linux: dm/linux/README.md
+     gone = [f'{t} ({how})' for t, how in tools.items() if not shutil.which(t, path=env['PATH'])]
+     if gone: raise BuildError('tools not found: ' + ', '.join(gone))
+     mtl = subprocess.run(['xcrun', '-sdk', 'iphoneos', 'metal', '--version'], capture_output=True, text=True, env=env)   # Xcode 26 and later install the Metal toolchain separately
++    if mtl.returncode and sys.platform != 'darwin': raise BuildError(f'the Metal compiler does not run ({(mtl.stderr.strip().splitlines() or ["no output"])[-1]}): install Apple\'s Metal Developer Tools for Windows (dm/linux/README.md)')
+     if mtl.returncode: raise BuildError(f'the Metal compiler does not run ({(mtl.stderr.strip().splitlines() or ["no output"])[-1]}): install it with xcodebuild -downloadComponent MetalToolchain')
++    if sys.platform != 'darwin':   # the iOS SDK (DM_IOS_SDK, else xtool's), see dm/linux/README.md
++        r = subprocess.run([sys.executable, str(xlate.parents[3] / 'ios/tools/build_app_linux.py'), '--find-sdk'], env=env, capture_output=True, text=True)
++        if r.returncode: raise BuildError(f'{r.stderr.strip()} (dm/linux/README.md)')
+     if not xlate.exists(): raise BuildError(f'the shader translator is missing from the repository: {xlate}')
+ 
+ 
++def xlate_launcher(xlate, d):
++    """The translator as dmsh_build.py and dmsh_chain.py run it: the in-repo launcher on macOS; elsewhere it is a macOS executable, so d gets a dmsh_xlate script that runs
++    the in-repo dll with dotnet, beside links to the dlls the chain fingerprints (dmsh_chain.py reads them from the launcher's folder)"""
++    if sys.platform == 'darwin': return xlate
++    rmtree(d); d.mkdir(parents=True)
++    for f in xlate.parent.iterdir():
++        if f.suffix in ('.dll', '.json'): (d / f.name).symlink_to(f)
++    (d / 'dmsh_xlate').write_text(f'#!/bin/sh\nexec dotnet {shlex.quote(str(xlate.parent / "dmsh_xlate.dll"))} "$@"\n'); (d / 'dmsh_xlate').chmod(0o755)
++    return d / 'dmsh_xlate'
++
++
+ def _importable(m):
+     try: __import__(m); return True
+     except ImportError: return False
+@@ -814,14 +835,15 @@ def glslc_done(d):   # capture files written whole: a GLSLC output (magic 0x1986
+     return out
+ 
+ 
+-def apple_silicon():   # hw.optional.arm64 is 1 on Apple silicon (for a Python under Rosetta too); an Intel Mac has no such key
++def apple_silicon():   # hw.optional.arm64 is 1 on Apple silicon (for a Python under Rosetta too); an Intel Mac has no such key (nor Linux: no Mac host there)
++    if sys.platform != 'darwin': return False
+     return subprocess.run(['sysctl', '-n', 'hw.optional.arm64'], capture_output=True, text=True).stdout.strip() == '1'
+ 
+ 
+ def build_mac_host(repo, out, env, logs, g):
+     """The Mac host for the profile, built into out: dm/host's own compile line (make -n) with the output moved, since make takes no target path with spaces and dm/host/dmhost may be another build's.
+     The host runs the game's own arm64 code natively, so an Intel Mac stops here (GitHub issue #54)"""
+-    if not apple_silicon(): raise BuildError('this step boots the game in the Mac host, which runs the game\'s own arm64 code natively: it needs a Mac with Apple silicon, and this Mac has an Intel processor')
++    if not apple_silicon(): raise BuildError('this step boots the game in the Mac host, which runs the game\'s own arm64 code natively: it needs a Mac with Apple silicon, ' + ('and this Mac has an Intel processor' if sys.platform == 'darwin' else 'so this game cannot be packed on Linux or Windows'))
+     host = repo / 'dm/host'
+     run(['make', '-s', f'GAME={g.id}', f'gen/{g.id}/game_profile.h', 'gen/vpx/libvpx.a'], logs / 'mac_host_make.log', env=env, cwd=host)
+     dry = subprocess.run(['make', '-n', '-B', f'GAME={g.id}', 'dmhost'], env=env, cwd=host, capture_output=True, text=True)
+@@ -1134,7 +1156,8 @@ class ShaderWatch:
+ 
+     def __call__(self):
+         if not self.w:   # dmsh_build.py's temporary folder: the dmsh_* under WORK made since it started
+-            self.w = max((d for d in self.tmp.glob('dmsh_*') if d.stat().st_birthtime >= self.t0 - 2), key=lambda d: d.stat().st_birthtime, default=None)
++            born = lambda d: getattr(d.stat(), 'st_birthtime', d.stat().st_ctime)   # Linux has no birth time: a new folder's ctime is as good
++            self.w = max((d for d in self.tmp.glob('dmsh_*') if born(d) >= self.t0 - 2), key=born, default=None)
+         try: ext = collections.Counter(os.path.splitext(x)[1] for x in os.listdir(self.w)) if self.w else collections.Counter()
+         except OSError: ext = collections.Counter()
+         if self.t1 is None:
+@@ -1150,8 +1173,9 @@ class ShaderWatch:
+                 'note': f'{ext[".bin"]:,} not cached' if ext['.bin'] else ''}
+ 
+ 
+-def toolchain():   # the compilers' versions, part of the shader stages' keys
+-    return ('cmd', ['xcodebuild', '-version']), ('cmd', ['spirv-cross', '--revision'])
++def toolchain():   # the compilers' versions, part of the shader stages' keys (Linux: the metal of dm/linux/bin/xcrun, Apple's Windows tools under wine)
++    xc = ('cmd', ['xcodebuild', '-version']) if sys.platform == 'darwin' else ('cmd', ['xcrun', '-sdk', 'iphoneos', 'metal', '--version'])
++    return xc, ('cmd', ['spirv-cross', '--revision'])
+ 
+ 
+ def build_shaders(py, repo, sh, xlate, env, logs, g, provisional=False, pkg_key=None):
+@@ -1362,6 +1386,7 @@ def main(args=None):
+     if not want_lang: raise BuildError(f'unknown game language {lang_in!r}; give one of {language_list([c for c, _ in nacp.LANGUAGES])}, by code or by name')
+     env = dict(os.environ, PATH=os.pathsep.join(TOOL_PATHS + [os.environ.get('PATH', '/usr/bin:/bin:/usr/sbin:/sbin')]))
+     env.setdefault('USER', getpass.getuser())   # xcodegen fails without USER (Couldn't find current username)
++    if sys.platform != 'darwin': env['PATH'] = os.pathsep.join([str(repo / 'dm/linux/bin'), env['PATH']])   # xcrun for the shader chain's metal (dm/linux/README.md)
+     env.setdefault('J', str(os.cpu_count() or 8))   # shader_split.py's and dmsh_build.py's workers (their default is 8)
+     py = sys.executable
+     app, fam = scan_nsps(nsp_dir)
+@@ -1422,6 +1447,7 @@ def main(args=None):
+     env.update(DM_GAME=g.id, DM_ROOT=str(work), WORK=str(work / 'tmp'))
+     logs = work / 'logs'
+     check_prereqs(env, xlate)
++    xlate = xlate_launcher(xlate, work / 'tools/dmsh_xlate')
+     picks = pick_nsps(fam, have, versions)
+ 
+     ex = work / 'extract'; ex.mkdir(parents=True, exist_ok=True); (work / 'tmp').mkdir(exist_ok=True)

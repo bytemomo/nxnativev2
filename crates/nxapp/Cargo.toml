@@ -1,0 +1,21 @@
+[package]
+name = "nxapp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "nxnativev2"
+path = "src/main.rs"
+
+[dependencies]
+nxcore.workspace = true
+anyhow.workspace = true
+tokio.workspace = true
+futures = "0.3"
+slint = { version = "1.18", features = ["unstable-winit-030"] }
+rfd = "0.17"
+tracing = "0.1"
+
+[build-dependencies]
+slint-build = "1.18"

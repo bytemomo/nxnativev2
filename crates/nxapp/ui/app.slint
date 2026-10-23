@@ -1,0 +1,734 @@
+// nxnativev2: Switch game files + keys → IPA → signed with an Apple ID → installed on an iPhone / iPad.
+import { Button, LineEdit, ProgressIndicator, ScrollView, ComboBox, CheckBox, Palette, SpinBox } from "std-widgets.slint";
+
+export struct GameItem {
+    id: string,
+    name: string,
+    subtitle: string,
+    built: bool,
+}
+
+export struct Line {
+    title: string,
+    detail: string,
+    ok: bool,
+}
+
+export struct Choice {
+    key: string,
+    label: string,
+}
+
+component Card inherits Rectangle {
+    in property <string> title;
+    background: Palette.alternate-background;
+    border-radius: 8px;
+    VerticalLayout {
+        padding: 14px;
+        spacing: 10px;
+        Text {
+            text: root.title;
+            font-size: 15px;
+            font-weight: 700;
+        }
+        @children
+    }
+}
+
+component StatusLine inherits HorizontalLayout {
+    in property <Line> line;
+    spacing: 8px;
+    Text {
+        text: line.ok ? "✓" : "✗";
+        color: line.ok ? #3fb950 : #f85149;
+        width: 14px;
+    }
+    Text {
+        text: line.title;
+        width: 290px;
+        overflow: elide;
+    }
+    Text {
+        text: line.detail;
+        color: Palette.foreground.transparentize(0.35);
+        overflow: elide;
+        horizontal-stretch: 1;
+    }
+}
+
+component Progress inherits VerticalLayout {
+    in property <bool> active;
+    in property <string> label;
+    in property <float> fraction;
+    in property <bool> indeterminate;
+    in property <string> detail;
+    spacing: 4px;
+    Text {
+        text: root.label;
+        overflow: elide;
+    }
+    ProgressIndicator {
+        visible: root.active;
+        progress: root.fraction;
+        indeterminate: root.indeterminate;
+    }
+    Text {
+        text: root.detail;
+        font-size: 12px;
+        color: Palette.foreground.transparentize(0.35);
+        overflow: elide;
+    }
+}
+
+export component AppWindow inherits Window {
+    title: "nxnative";
+    preferred-width: 1100px;
+    preferred-height: 760px;
+    min-width: 860px;
+    min-height: 600px;
+
+    // ---- data ----
+    in property <[GameItem]> games;
+    in-out property <int> selected: -1;    // -1 = the Apple tools page
+    in property <bool> dropping;           // files are dragged over the window
+    in property <string> status;           // a short message at the bottom
+
+    // the Apple tools page
+    in property <[Line]> requirements;
+    in property <string> sdk-state;
+    in property <string> metal-state;
+    in property <string> repo-path;
+    in property <string> data-path;
+    in property <bool> tool-busy;
+    in property <string> tool-label;
+    in property <float> tool-fraction;
+
+    // the selected game
+    in property <string> game-name;
+    in property <string> game-id;
+    in property <string> game-badge;
+    in property <[Line]> game-files;
+    in property <string> game-missing;     // "" = ready to build
+    in property <string> ipa-info;
+
+    in property <bool> building;
+    in property <string> build-label;
+    in property <float> build-fraction;
+    in property <bool> build-indeterminate;
+    in property <string> build-detail;
+    in property <string> build-log;
+    in-out property <bool> show-log;
+
+    // Apple ID and install
+    in property <string> signed-in-as;     // "" = signed out
+    in-out property <string> apple-id;
+    in-out property <string> password;
+    in property <bool> signing-in;
+    in property <[string]> device-labels;
+    in-out property <int> device-index;
+    in-out property <bool> memory-limit: true;
+    in-out property <bool> remember-password: true;
+    in property <bool> has-saved-password;
+    in-out property <int> install-target;   // 0 = signed with the Apple ID and installed, 1 = exported for LiveContainer (IPA + certificate to Downloads)
+    in property <string> downloads-path;
+    in property <bool> device-busy;
+    in property <string> device-label;
+    in property <float> device-fraction;
+    in property <bool> installing;
+    in property <string> install-label;
+    in property <float> install-fraction;
+
+    // two-factor dialog
+    in property <bool> tfa-open;
+    in property <string> tfa-message;
+    in property <[Choice]> tfa-numbers;
+    in-out property <string> tfa-code;
+    in-out property <int> tfa-sms-id: 1;
+
+    // certificates dialog
+    in property <bool> certs-open;
+    in property <[Choice]> certs;
+
+    // ---- actions ----
+    callback select(int);
+    callback add-files();
+    callback remove-game();
+    callback pick-xip();
+    callback pick-metal();
+    callback pick-repo();
+    callback build();
+    callback cancel-build();
+    callback sign-in();
+    callback sign-out();
+    callback refresh-devices();
+    callback install();
+    callback forget-password();
+    callback install-other-ipa();
+    callback tfa-submit();
+    callback tfa-sms(int);
+    callback tfa-devices();
+    callback tfa-resend();
+    callback tfa-cancel();
+    callback revoke(string);
+    callback certs-cancel();
+
+    HorizontalLayout {
+        // ---- sidebar ----
+        Rectangle {
+            width: 280px;
+            background: Palette.alternate-background.darker(0.15);
+            VerticalLayout {
+                padding: 12px;
+                spacing: 8px;
+                Text {
+                    text: "nxnative";
+                    font-size: 22px;
+                    font-weight: 800;
+                }
+                Text {
+                    text: "Switch games on iPhone and iPad";
+                    font-size: 12px;
+                    color: Palette.foreground.transparentize(0.4);
+                }
+                Rectangle { height: 6px; }
+                Rectangle {
+                    height: 40px;
+                    border-radius: 6px;
+                    background: root.selected == -1 ? Palette.selection-background : tools-ta.has-hover ? Palette.alternate-background : transparent;
+                    HorizontalLayout {
+                        padding-left: 10px;
+                        spacing: 8px;
+                        alignment: start;
+                        Text {
+                            text: "⚙  Apple tools";
+                            vertical-alignment: center;
+                            color: root.selected == -1 ? Palette.selection-foreground : Palette.foreground;
+                        }
+                    }
+                    tools-ta := TouchArea {
+                        clicked => { root.select(-1); }
+                    }
+                }
+                Rectangle {
+                    height: 40px;
+                    border-radius: 6px;
+                    background: root.selected == -2 ? Palette.selection-background : dev-ta.has-hover ? Palette.alternate-background : transparent;
+                    HorizontalLayout {
+                        padding-left: 10px;
+                        alignment: start;
+                        Text {
+                            text: "📱  iPhone / iPad";
+                            vertical-alignment: center;
+                            color: root.selected == -2 ? Palette.selection-foreground : Palette.foreground;
+                        }
+                    }
+                    dev-ta := TouchArea {
+                        clicked => { root.select(-2); }
+                    }
+                }
+                Text {
+                    text: "GAMES";
+                    font-size: 11px;
+                    font-weight: 700;
+                    color: Palette.foreground.transparentize(0.5);
+                }
+                ScrollView {
+                    vertical-stretch: 1;
+                    VerticalLayout {
+                        spacing: 4px;
+                        for g[i] in root.games: Rectangle {
+                            height: 54px;
+                            border-radius: 6px;
+                            background: root.selected == i ? Palette.selection-background : ta.has-hover ? Palette.alternate-background : transparent;
+                            VerticalLayout {
+                                padding-left: 10px;
+                                padding-right: 8px;
+                                alignment: center;
+                                Text {
+                                    text: (g.built ? "● " : "") + g.name;
+                                    font-weight: 600;
+                                    overflow: elide;
+                                    color: root.selected == i ? Palette.selection-foreground : Palette.foreground;
+                                }
+                                Text {
+                                    text: g.subtitle;
+                                    font-size: 11px;
+                                    overflow: elide;
+                                    color: (root.selected == i ? Palette.selection-foreground : Palette.foreground).transparentize(0.35);
+                                }
+                            }
+                            ta := TouchArea {
+                                clicked => { root.select(i); }
+                            }
+                        }
+                        if root.games.length == 0: Text {
+                            text: "No games yet.\nDrop NSP / XCI files and prod.keys\non the window, or use Add files.";
+                            wrap: word-wrap;
+                            color: Palette.foreground.transparentize(0.4);
+                        }
+                    }
+                }
+                Button {
+                    text: "Add files…";
+                    primary: true;
+                    clicked => { root.add-files(); }
+                }
+                Text {
+                    text: root.status;
+                    font-size: 11px;
+                    wrap: word-wrap;
+                    color: Palette.foreground.transparentize(0.3);
+                }
+            }
+        }
+
+        // ---- main area ----
+        ScrollView {
+            horizontal-stretch: 1;
+            VerticalLayout {
+                padding: 20px;
+                spacing: 14px;
+                alignment: start;
+
+                // Apple tools
+                if root.selected == -1: VerticalLayout {
+                    spacing: 14px;
+                    Text {
+                        text: "Apple tools";
+                        font-size: 24px;
+                        font-weight: 800;
+                    }
+                    Text {
+                        text: "Building an iPhone app needs two of Apple's downloads (free with an Apple ID, at developer.apple.com/download/all). They are set up once and kept for every game.";
+                        wrap: word-wrap;
+                        color: Palette.foreground.transparentize(0.3);
+                    }
+                    Card {
+                        title: "iOS SDK (from Xcode)";
+                        Text {
+                            text: root.sdk-state;
+                            wrap: word-wrap;
+                        }
+                        HorizontalLayout {
+                            alignment: start;
+                            Button {
+                                text: "Choose Xcode .xip…";
+                                enabled: !root.tool-busy;
+                                clicked => { root.pick-xip(); }
+                            }
+                        }
+                    }
+                    Card {
+                        title: "Metal shader compiler";
+                        Text {
+                            text: root.metal-state;
+                            wrap: word-wrap;
+                        }
+                        HorizontalLayout {
+                            alignment: start;
+                            Button {
+                                text: "Choose Metal Developer Tools for Windows installer…";
+                                enabled: !root.tool-busy;
+                                clicked => { root.pick-metal(); }
+                            }
+                        }
+                    }
+                    if root.tool-busy || root.tool-label != "": Progress {
+                        active: root.tool-busy;
+                        label: root.tool-label;
+                        fraction: root.tool-fraction;
+                        indeterminate: root.tool-fraction <= 0;
+                    }
+                    Card {
+                        title: "Build requirements";
+                        for r in root.requirements: StatusLine { line: r; }
+                    }
+                    Card {
+                        title: "Locations";
+                        HorizontalLayout {
+                            spacing: 8px;
+                            Text {
+                                text: "nxnative scripts: " + (root.repo-path == "" ? "not set" : root.repo-path);
+                                overflow: elide;
+                                horizontal-stretch: 1;
+                                vertical-alignment: center;
+                            }
+                            Button {
+                                text: "Choose…";
+                                clicked => { root.pick-repo(); }
+                            }
+                        }
+                        Text {
+                            text: "Data folder: " + root.data-path;
+                            overflow: elide;
+                        }
+                    }
+                }
+
+                // iPhone / iPad: Apple ID, device, LiveContainer
+                if root.selected == -2: VerticalLayout {
+                    spacing: 14px;
+                    Text {
+                        text: "iPhone / iPad";
+                        font-size: 24px;
+                        font-weight: 800;
+                    }
+                    Card {
+                        title: "Apple ID";
+                        if root.signed-in-as == "": VerticalLayout {
+                            spacing: 8px;
+                            Text {
+                                text: "Signs the apps installed on their own (a free Apple ID works: they need signing again every 7 days). The password is only sent to Apple" + (root.has-saved-password ? "; it is saved in the system keyring." : ".");
+                                wrap: word-wrap;
+                                color: Palette.foreground.transparentize(0.3);
+                            }
+                            HorizontalLayout {
+                                spacing: 8px;
+                                LineEdit {
+                                    placeholder-text: "Apple ID (email)";
+                                    text <=> root.apple-id;
+                                    enabled: !root.signing-in;
+                                }
+                                LineEdit {
+                                    placeholder-text: root.has-saved-password ? "saved in the keyring" : "Password";
+                                    input-type: InputType.password;
+                                    text <=> root.password;
+                                    enabled: !root.signing-in;
+                                    accepted => { root.sign-in(); }
+                                }
+                                Button {
+                                    text: root.signing-in ? "Signing in…" : "Sign in";
+                                    enabled: !root.signing-in && root.apple-id != "" && (root.password != "" || root.has-saved-password);
+                                    clicked => { root.sign-in(); }
+                                }
+                            }
+                            HorizontalLayout {
+                                spacing: 8px;
+                                CheckBox {
+                                    text: "Remember the password (system keyring)";
+                                    checked <=> root.remember-password;
+                                }
+                                if root.has-saved-password: Button {
+                                    text: "Forget saved password";
+                                    clicked => { root.forget-password(); }
+                                }
+                            }
+                        }
+                        if root.signed-in-as != "": HorizontalLayout {
+                            spacing: 8px;
+                            Text {
+                                text: "Signed in as " + root.signed-in-as;
+                                vertical-alignment: center;
+                                horizontal-stretch: 1;
+                            }
+                            Button {
+                                text: "Sign out";
+                                enabled: !root.installing && !root.device-busy;
+                                clicked => { root.sign-out(); }
+                            }
+                        }
+                    }
+                    Card {
+                        title: "Device";
+                        HorizontalLayout {
+                            spacing: 8px;
+                            ComboBox {
+                                horizontal-stretch: 1;
+                                enabled: root.device-labels.length > 0;
+                                model: root.device-labels.length == 0 ? ["No device found: connect it by USB, unlock it, tap Trust"] : root.device-labels;
+                                current-index <=> root.device-index;
+                            }
+                            Button {
+                                text: "Refresh";
+                                clicked => { root.refresh-devices(); }
+                            }
+                        }
+                    }
+                    Card {
+                        title: "Other apps";
+                        Text {
+                            text: "Sign any IPA with this Apple ID and install it on the device: LiveContainer, for example (then export the games for it from their page).";
+                            wrap: word-wrap;
+                            color: Palette.foreground.transparentize(0.3);
+                        }
+                        HorizontalLayout {
+                            alignment: start;
+                            Button {
+                                text: "Install an IPA…";
+                                enabled: root.signed-in-as != "" && root.device-labels.length > 0 && !root.device-busy && !root.installing;
+                                clicked => { root.install-other-ipa(); }
+                            }
+                        }
+                        if root.device-busy || root.device-label != "": Progress {
+                            active: root.device-busy;
+                            label: root.device-label;
+                            fraction: root.device-fraction;
+                            indeterminate: root.device-fraction <= 0;
+                        }
+                    }
+                }
+
+                // a game
+                if root.selected >= 0: VerticalLayout {
+                    spacing: 14px;
+                    HorizontalLayout {
+                        spacing: 10px;
+                        VerticalLayout {
+                            horizontal-stretch: 1;
+                            Text {
+                                text: root.game-name;
+                                font-size: 24px;
+                                font-weight: 800;
+                                overflow: elide;
+                            }
+                            Text {
+                                text: root.game-id + "   " + root.game-badge;
+                                color: Palette.foreground.transparentize(0.4);
+                            }
+                        }
+                        Button {
+                            text: "Remove";
+                            enabled: !root.building && !root.installing;
+                            clicked => { root.remove-game(); }
+                        }
+                    }
+
+                    Card {
+                        title: "1  Game files and keys";
+                        for f in root.game-files: StatusLine { line: f; }
+                        HorizontalLayout {
+                            alignment: start;
+                            spacing: 8px;
+                            Button {
+                                text: "Add files…";
+                                clicked => { root.add-files(); }
+                            }
+                            Text {
+                                text: "Drop an update, DLC or keys here to add them.";
+                                vertical-alignment: center;
+                                color: Palette.foreground.transparentize(0.4);
+                            }
+                        }
+                    }
+
+                    Card {
+                        title: "2  Build the app";
+                        if root.game-missing != "": Text {
+                            text: "Missing: " + root.game-missing;
+                            color: #f0883e;
+                        }
+                        Text {
+                            text: root.ipa-info;
+                            visible: root.ipa-info != "";
+                        }
+                        HorizontalLayout {
+                            alignment: start;
+                            spacing: 8px;
+                            Button {
+                                text: root.ipa-info == "" ? "Build IPA" : "Build again";
+                                primary: root.ipa-info == "";
+                                enabled: !root.building && root.game-missing == "";
+                                clicked => { root.build(); }
+                            }
+                            Button {
+                                text: "Cancel";
+                                visible: root.building;
+                                clicked => { root.cancel-build(); }
+                            }
+                            CheckBox {
+                                text: "Show log";
+                                checked <=> root.show-log;
+                            }
+                        }
+                        if root.building || root.build-label != "": Progress {
+                            active: root.building;
+                            label: root.build-label;
+                            fraction: root.build-fraction;
+                            indeterminate: root.build-indeterminate;
+                            detail: root.build-detail;
+                        }
+                        if root.show-log: Rectangle {
+                            height: 220px;
+                            background: Palette.background;
+                            border-radius: 4px;
+                            ScrollView {
+                                Text {
+                                    text: root.build-log;
+                                    font-family: "monospace";
+                                    font-size: 11px;
+                                    wrap: word-wrap;
+                                }
+                            }
+                        }
+                    }
+
+                    Card {
+                        title: "3  Install on your iPhone / iPad";
+                        HorizontalLayout {
+                            spacing: 8px;
+                            ComboBox {
+                                horizontal-stretch: 1;
+                                model: ["Sign with your Apple ID and install", "Export for LiveContainer (IPA + certificate to Downloads)"];
+                                current-index <=> root.install-target;
+                            }
+                            if root.install-target == 0: ComboBox {
+                                horizontal-stretch: 1;
+                                enabled: root.device-labels.length > 0;
+                                model: root.device-labels.length == 0 ? ["No device found"] : root.device-labels;
+                                current-index <=> root.device-index;
+                            }
+                        }
+                        if root.signed-in-as == "": Text {
+                            text: "Sign in with your Apple ID on the iPhone / iPad page first" + (root.install-target == 1 ? " (the certificate comes from the account)." : ".");
+                            color: #f0883e;
+                        }
+                        if root.install-target == 0: CheckBox {
+                            text: "Ask for the Increased Memory Limit (bigger games need it; if Apple refuses, the app is installed without)";
+                            checked <=> root.memory-limit;
+                        }
+                        if root.install-target == 1: Text {
+                            text: "The IPA and this account's signing certificate (.p12, no password) go to " + root.downloads-path + ". Move both to the device; in LiveContainer import the certificate once (Settings → Import Certificate), then install the IPA there: LiveContainer signs it. LiveContainer itself must be signed with the same Apple ID.";
+                            wrap: word-wrap;
+                            color: Palette.foreground.transparentize(0.3);
+                        }
+                        HorizontalLayout {
+                            alignment: start;
+                            Button {
+                                text: root.install-target == 0 ? "Install" : "Export";
+                                primary: true;
+                                enabled: !root.installing && !root.building && !root.device-busy && root.ipa-info != "" && root.signed-in-as != "" && (root.install-target == 1 || root.device-labels.length > 0);
+                                clicked => { root.install(); }
+                            }
+                        }
+                        if root.installing || root.install-label != "": Progress {
+                            active: root.installing;
+                            label: root.install-label;
+                            fraction: root.install-fraction;
+                            indeterminate: root.install-fraction <= 0;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ---- files dragged over the window ----
+    if root.dropping: Rectangle {
+        background: Palette.selection-background.transparentize(0.25);
+        border-width: 3px;
+        border-color: Palette.selection-foreground;
+        Text {
+            text: "Drop game files (.nsp / .xci) and prod.keys";
+            font-size: 22px;
+            font-weight: 700;
+            color: Palette.selection-foreground;
+        }
+    }
+
+    // ---- two-factor dialog ----
+    if root.tfa-open: Rectangle {
+        background: #000000a0;
+        TouchArea { }
+        Rectangle {
+            width: 460px;
+            height: tfa-col.preferred-height;
+            background: Palette.background;
+            border-radius: 10px;
+            tfa-col := VerticalLayout {
+                padding: 20px;
+                spacing: 10px;
+                Text {
+                    text: "Verification code";
+                    font-size: 18px;
+                    font-weight: 700;
+                }
+                Text {
+                    text: root.tfa-message;
+                    wrap: word-wrap;
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    LineEdit {
+                        placeholder-text: "6-digit code";
+                        text <=> root.tfa-code;
+                        accepted => { root.tfa-submit(); }
+                    }
+                    Button {
+                        text: "Submit";
+                        primary: true;
+                        enabled: root.tfa-code != "";
+                        clicked => { root.tfa-submit(); }
+                    }
+                }
+                for n in root.tfa-numbers: Button {
+                    text: "Send code by SMS to " + n.label;
+                    clicked => { root.tfa-sms(n.key.to-float()); }
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    Text {
+                        text: "SMS to trusted number ID";
+                        vertical-alignment: center;
+                    }
+                    SpinBox {
+                        minimum: 1;
+                        maximum: 9;
+                        value <=> root.tfa-sms-id;
+                    }
+                    Button {
+                        text: "Send";
+                        clicked => { root.tfa-sms(root.tfa-sms-id); }
+                    }
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    Button {
+                        text: "Send to my devices";
+                        clicked => { root.tfa-devices(); }
+                    }
+                    Button {
+                        text: "Resend";
+                        clicked => { root.tfa-resend(); }
+                    }
+                    Button {
+                        text: "Cancel";
+                        clicked => { root.tfa-cancel(); }
+                    }
+                }
+            }
+        }
+    }
+
+    // ---- certificates dialog ----
+    if root.certs-open: Rectangle {
+        background: #000000a0;
+        TouchArea { }
+        Rectangle {
+            width: 480px;
+            height: certs-col.preferred-height;
+            background: Palette.background;
+            border-radius: 10px;
+            certs-col := VerticalLayout {
+                padding: 20px;
+                spacing: 10px;
+                Text {
+                    text: "Too many development certificates";
+                    font-size: 18px;
+                    font-weight: 700;
+                }
+                Text {
+                    text: "This Apple ID already has the most signing certificates Apple allows. Revoke one to continue: apps signed with it (for example by another sideloading tool) stop opening until they are signed again.";
+                    wrap: word-wrap;
+                }
+                for c in root.certs: Button {
+                    text: "Revoke " + c.label;
+                    clicked => { root.revoke(c.key); }
+                }
+                Button {
+                    text: "Cancel";
+                    clicked => { root.certs-cancel(); }
+                }
+            }
+        }
+    }
+}
