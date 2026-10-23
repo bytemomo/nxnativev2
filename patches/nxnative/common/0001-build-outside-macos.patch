@@ -464,10 +464,10 @@ index 0000000..6440ef3
 +t(f'done: {out_ipa} ({os.path.getsize(out_ipa) / 2**30:.1f} GB)')
 diff --git a/dm/ios/tools/gen_build_portable.py b/dm/ios/tools/gen_build_portable.py
 new file mode 100755
-index 0000000..bc2df3b
+index 0000000..7f64fc8
 --- /dev/null
 +++ b/dm/ios/tools/gen_build_portable.py
-@@ -0,0 +1,136 @@
+@@ -0,0 +1,139 @@
 +#!/usr/bin/env python3
 +# gen_build.py without make and without symlinks (Linux, Windows): the same Gen/src, Gen/main/main.c and xcconfig lines, from dm/host/Makefile's own
 +# variables, evaluated here instead of by `make -n -B dmhost`. It understands what that Makefile uses: assignments (= and :=), $(VAR), $(sort …),
@@ -492,7 +492,9 @@ index 0000000..bc2df3b
 +subprocess.run([sys.executable, games_py, 'header', game, game_h], check=True, cwd=host)   # the Makefile's game_profile target
 +
 +text = open(os.path.join(host, 'Makefile')).read().replace('\\\n', ' ')
-+variables = {'GAME': game, 'GAME_DIR': game_dir, 'GAME_H': game_h}
++# every path this evaluator produces uses /: the compile lines are split with shlex, which takes Windows' \ for escapes
++slash = lambda p: p.replace(os.sep, '/')
++variables = {'GAME': game, 'GAME_DIR': slash(game_dir), 'GAME_H': slash(game_h)}
 +fixed = set(variables)
 +for m in re.finditer(r'^([A-Z_][A-Z0-9_]*)\s*:?=\s*(.*?)\s*(?:#.*)?$', text, re.M):
 +    if m.group(1) not in fixed:   # GAME, GAME_DIR, GAME_H are this script's (absolute paths)
@@ -528,17 +530,17 @@ index 0000000..bc2df3b
 +            elif name == 'wildcard':
 +                found = []
 +                for pat in expand(rest, depth + 1).split():
-+                    found += sorted(os.path.relpath(p, host) if not os.path.isabs(pat) else p for p in glob.glob(os.path.join(host, pat)))
++                    found += sorted(slash(os.path.relpath(p, host) if not os.path.isabs(pat) else p) for p in glob.glob(os.path.join(host, pat)))
 +                out += ' '.join(found)
 +            elif name == 'dir':
-+                out += ' '.join(os.path.dirname(w) + '/' for w in expand(rest, depth + 1).split())
++                out += ' '.join(slash(os.path.dirname(w)) + '/' for w in expand(rest, depth + 1).split())
 +            elif name == 'shell':
 +                cmd = shlex.split(expand(rest, depth + 1))
 +                if cmd[:1] == ['find'] and '-name' in cmd:
 +                    root, pat = cmd[1], cmd[cmd.index('-name') + 1]
 +                    hits = []
 +                    for d, _, fs in os.walk(os.path.join(host, root)):
-+                        hits += [os.path.relpath(os.path.join(d, f), host) for f in fs if fnmatch.fnmatch(f, pat)]
++                        hits += [slash(os.path.relpath(os.path.join(d, f), host)) for f in fs if fnmatch.fnmatch(f, pat)]
 +                    out += ' '.join(sorted(hits))
 +            elif name in ('if', 'and', 'patsubst', 'filter-out', 'or', 'strip', 'error'):
 +                out += ''   # not needed for the compile list
@@ -601,9 +603,56 @@ index 0000000..bc2df3b
 +    if s == os.path.join(host, 'main.c'): place(s, f'{gen}/main/main.c'); continue
 +    flat = os.path.relpath(s, os.path.dirname(host)).replace(os.sep, '__').replace('/', '__')
 +    place(s, f'{gen}/src/{flat}')
-+print('HEADER_SEARCH_PATHS = $(inherited) ' + ' '.join(f'"{d}"' for d in incs + dirs))
++# paths with / on every platform: the xcconfig is read with shlex, which takes Windows' \ for escapes (clang accepts / on Windows)
++print('HEADER_SEARCH_PATHS = $(inherited) ' + ' '.join(f'"{d}"'.replace(os.sep, '/') for d in incs + dirs))
 +print('OTHER_CFLAGS = $(inherited) ' + ' '.join(defs))
 +print('DM_FRAMEWORKS = ' + ' '.join(f'-framework {f}' for f in fws if f != 'Cocoa'))
+diff --git a/dm/ios/tools/gen_embed.py b/dm/ios/tools/gen_embed.py
+index faad940..2613078 100644
+--- a/dm/ios/tools/gen_embed.py
++++ b/dm/ios/tools/gen_embed.py
+@@ -16,7 +16,7 @@ for n in names:
+     hdr = dict(l[2:].split() for l in open(f'{out}/{n}.fixups.tsv'))
+     te, po = int(hdr['TEXT_END'], 16), int(hdr['PATCH_OFF'], 16)
+     ko, ks = int(hdr['KEY_PAGE_OFF'], 16), int(hdr['KEY_PAGE_SIZE'], 16)
+-    bin_ = os.path.abspath(f'{out}/{n}.patched.bin'); sz = os.path.getsize(bin_)
++    bin_ = os.path.abspath(f'{out}/{n}.patched.bin').replace(os.sep, '/'); sz = os.path.getsize(bin_)   # / also on Windows: \ is an escape in the .incbin string
+     a, end = r16(te), r16(sz)
+     if po < 0:   # patch area before the base (patch_nso.py FAR): W ends at the end of data, the loader supplies zero pages for bss and the key page; in the file the patch area follows at FILE_IMAGE_LEN
+         fl = int(hdr['FILE_IMAGE_LEN'], 16)
+diff --git a/dm/ios/tools/pack_ipa.py b/dm/ios/tools/pack_ipa.py
+index 3aee7e0..49b28f0 100644
+--- a/dm/ios/tools/pack_ipa.py
++++ b/dm/ios/tools/pack_ipa.py
+@@ -16,6 +16,19 @@ CHUNK = 16 << 20
+ L32, L16 = 0xFFFFFFFF, 0xFFFF
+ DIR_MODE = stat.S_IFDIR | 0o755   # a parent folder no source folder stands for (Payload/, msl/)
+ Entry = collections.namedtuple('Entry', 'name path st')   # st None: such a parent folder
++MACHO = (b'\xcf\xfa\xed\xfe', b'\xce\xfa\xed\xfe', b'\xca\xfe\xba\xbe')   # 64-bit, 32-bit, universal
++
++
++def unix_mode(e):
++    """The entry's Unix mode. Windows has none (st_mode has no execute bits): regular files get 0644, Mach-O binaries 0755 (iOS runs the
++    app's executable only with its x bit), folders 0755"""
++    if os.name != 'nt': return e.st.st_mode
++    if stat.S_ISDIR(e.st.st_mode): return stat.S_IFDIR | 0o755
++    if stat.S_ISLNK(e.st.st_mode): return e.st.st_mode
++    try:
++        with open(e.path, 'rb') as f: exe = f.read(4) in MACHO
++    except OSError: exe = False
++    return stat.S_IFREG | (0o755 if exe else 0o644)
+ 
+ 
+ def entries(maps, skip):
+@@ -78,7 +91,7 @@ class Zip:
+         off, nb, fl, t, d = h
+         z = [v for v in (usize, csize, off) if v >= L32]   # zip64 extra: the fields that do not fit, in this order
+         ext = struct.pack(f'<HH{len(z)}Q', 1, 8 * len(z), *z) if z else b''
+-        mode = e.st.st_mode if e.st else DIR_MODE
++        mode = unix_mode(e) if e.st else DIR_MODE
+         self.cd.append(struct.pack('<IHHHHHHIIIHHHHHII', 0x02014B50, 0x031E, 45 if z else 20 if method == 8 else 10, fl, method, t, d, crc, min(csize, L32), min(usize, L32),
+                                    len(nb), len(ext), 0, 0, 0, (mode << 16) | (0x10 if stat.S_ISDIR(mode) else 0), min(off, L32)) + nb + ext)
+ 
 diff --git a/dm/linux/README.md b/dm/linux/README.md
 new file mode 100644
 index 0000000..91bdab9

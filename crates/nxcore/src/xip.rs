@@ -310,31 +310,45 @@ fn write(mut r: impl Read, plan: &Plan, out: &Path) -> Result<()> {
     make_symlinks(&symlinks)
 }
 
-/// Creates the symlinks: real links on Unix; copies of the target on Windows, where links need privileges
+/// Creates the symlinks: real links on Unix; copies of the targets on Windows, where links need a privilege (NXNATIVE_COPY_LINKS=1 copies on
+/// Unix too, to test that path). Copies are made in passes until nothing is left: a file link only once its target exists (links to links), a
+/// folder link only once no link inside the folder is still waiting (the SDK's iPhoneOS26.5.sdk → iPhoneOS.sdk holds 85 file links of its own)
 fn make_symlinks(symlinks: &[(PathBuf, String)]) -> Result<()> {
-    for (path, target) in symlinks {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        if path.symlink_metadata().is_ok() {
-            continue;
-        }
+    let copy = cfg!(not(unix)) || std::env::var("NXNATIVE_COPY_LINKS").as_deref() == Ok("1");
+    if !copy {
         #[cfg(unix)]
-        std::os::unix::fs::symlink(target, path)?;
-        #[cfg(not(unix))]
-        {
-            let src = path.parent().unwrap().join(target);
-            if src.is_dir() {
-                copy_dir(&src, path)?;
-            } else if src.is_file() {
-                fs::copy(&src, path)?;
+        for (path, target) in symlinks {
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent)?;
             }
+            if path.symlink_metadata().is_err() {
+                std::os::unix::fs::symlink(target, path)?;
+            }
+        }
+        return Ok(());
+    }
+    let mut pending: Vec<(PathBuf, PathBuf)> = symlinks.iter().map(|(p, t)| (p.clone(), p.parent().unwrap().join(t))).collect();
+    while !pending.is_empty() {
+        let before = pending.len();
+        let waiting: Vec<PathBuf> = pending.iter().map(|(p, _)| p.clone()).collect();
+        pending.retain(|(path, src)| {
+            let done = if src.is_file() {
+                fs::create_dir_all(path.parent().unwrap()).and_then(|_| fs::copy(src, path).map(|_| ())).is_ok()
+            } else if src.is_dir() && !waiting.iter().any(|w| w.starts_with(src) && w != path) {
+                copy_dir(src, path).is_ok()
+            } else {
+                false
+            };
+            !done
+        });
+        if pending.len() == before {
+            let left: Vec<String> = pending.iter().take(5).map(|(p, s)| format!("{} → {}", p.display(), s.display())).collect();
+            anyhow::bail!("{} links have no target to copy: {}", pending.len(), left.join(", "));
         }
     }
     Ok(())
 }
 
-#[cfg(not(unix))]
 fn copy_dir(src: &Path, dst: &Path) -> io::Result<()> {
     fs::create_dir_all(dst)?;
     for e in fs::read_dir(src)? {

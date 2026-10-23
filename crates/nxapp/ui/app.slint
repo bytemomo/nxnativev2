@@ -135,6 +135,8 @@ export component AppWindow inherits Window {
     in property <string> share-url;
     in property <image> share-qr;
     in property <string> share-sent;
+    in property <[string]> app-id-labels;
+    in-out property <int> app-id-index;
     in property <bool> device-busy;
     in property <string> device-label;
     in property <float> device-fraction;
@@ -169,6 +171,8 @@ export component AppWindow inherits Window {
     callback forget-password();
     callback install-other-ipa();
     callback stop-share();
+    callback load-app-ids();
+    callback add-more-ram();
     callback save-downloads();
     callback tfa-submit();
     callback tfa-sms(int);
@@ -463,6 +467,30 @@ export component AppWindow inherits Window {
                                 text: "Install an IPA…";
                                 enabled: root.signed-in-as != "" && root.device-labels.length > 0 && !root.device-busy && !root.installing;
                                 clicked => { root.install-other-ipa(); }
+                            }
+                        }
+                        Text {
+                            text: "More RAM for an installed app: Apple's Increased Memory Limit on its App ID (as GetMoreRam does). For LiveContainer it covers every app it runs. Afterwards reinstall or refresh that app, so its new provisioning profile carries it.";
+                            wrap: word-wrap;
+                            color: Palette.foreground.transparentize(0.3);
+                        }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            Button {
+                                text: "Load App IDs";
+                                enabled: root.signed-in-as != "" && !root.device-busy;
+                                clicked => { root.load-app-ids(); }
+                            }
+                            ComboBox {
+                                horizontal-stretch: 1;
+                                enabled: root.app-id-labels.length > 0;
+                                model: root.app-id-labels.length == 0 ? ["(load the App IDs first)"] : root.app-id-labels;
+                                current-index <=> root.app-id-index;
+                            }
+                            Button {
+                                text: "Add Increased Memory Limit";
+                                enabled: root.app-id-labels.length > 0 && !root.device-busy;
+                                clicked => { root.add-more-ram(); }
                             }
                         }
                         if root.device-busy || root.device-label != "": Progress {

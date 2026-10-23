@@ -40,6 +40,7 @@ struct App {
     share: Mutex<Option<nxcore::serve::Server>>,
     /// the Metal compiler's version line (running it takes seconds under wine): asked once, again after an install
     metal_version: Mutex<Option<String>>,
+    app_ids: Mutex<Vec<apple::AppIdInfo>>,
 }
 
 /// Runs `f` with the window on the UI thread (from any thread)
@@ -381,7 +382,8 @@ impl App {
                     let a2 = app.clone();
                     let n2 = name.clone();
                     let progress = Arc::new(move |f: f32| a2.device_progress(true, format!("Installing {n2}… {:.0}%", f * 100.0), f.min(0.99)));
-                    apple::install(session, &udid, &ipa, false, progress).await
+                    let mem = app.settings.lock().unwrap().increased_memory_limit;
+                    apple::install(session, &udid, &ipa, mem, progress).await
                 }
                 None => Err(anyhow::anyhow!("not signed in")),
             };
@@ -605,6 +607,68 @@ impl App {
         });
     }
 
+    /// The account's App IDs, for the Increased Memory Limit
+    fn load_app_ids(self: &Arc<Self>) {
+        let app = self.clone();
+        self.device_progress(true, "Loading the App IDs…", 0.0);
+        self.rt.spawn(async move {
+            let result = {
+                let mut guard = app.session.lock().await;
+                match guard.as_mut() {
+                    Some(s) => s.app_ids().await,
+                    None => Err(anyhow::anyhow!("not signed in")),
+                }
+            };
+            match result {
+                Ok(ids) => {
+                    let labels: Vec<SharedString> = ids
+                        .iter()
+                        .map(|a| format!("{}  ({}){}", a.name, a.identifier, if a.memory_limit == Some(true) { "  · has more RAM" } else { "" }).into())
+                        .collect();
+                    // LiveContainer first: the usual reason to come here
+                    let lc = ids.iter().position(|a| a.identifier.to_lowercase().contains("livecontainer")).unwrap_or(0) as i32;
+                    let n = ids.len();
+                    *app.app_ids.lock().unwrap() = ids;
+                    on_ui(&app.ui, move |w| {
+                        w.set_app_id_labels(model(labels));
+                        w.set_app_id_index(lc);
+                    });
+                    app.device_progress(false, format!("{n} App IDs"), 0.0);
+                }
+                Err(e) => {
+                    tracing::error!("listing App IDs failed: {e:#}");
+                    app.device_progress(false, format!("Cannot list the App IDs: {e:#}"), 0.0);
+                }
+            }
+        });
+    }
+
+    fn add_more_ram(self: &Arc<Self>, index: i32) {
+        let Some(target) = self.app_ids.lock().unwrap().get(index.max(0) as usize).cloned() else { return };
+        let app = self.clone();
+        self.device_progress(true, format!("Adding the Increased Memory Limit to {}…", target.identifier), 0.0);
+        self.rt.spawn(async move {
+            let result = {
+                let mut guard = app.session.lock().await;
+                match guard.as_mut() {
+                    Some(s) => s.add_memory_limit(&target.identifier).await,
+                    None => Err(anyhow::anyhow!("not signed in")),
+                }
+            };
+            match result {
+                Ok(()) => app.device_progress(
+                    false,
+                    format!("Increased Memory Limit added to {}. Now reinstall or refresh that app (in its sideloading tool, or Install an IPA… here) so its new profile carries it.", target.name),
+                    1.0,
+                ),
+                Err(e) => {
+                    tracing::error!("adding the Increased Memory Limit failed: {e:#}");
+                    app.device_progress(false, format!("Failed: {e:#}"), 0.0);
+                }
+            }
+        });
+    }
+
     fn stop_share(&self) {
         *self.share.lock().unwrap() = None;
         on_ui(&self.ui, |w| {
@@ -721,6 +785,7 @@ fn main() -> Result<()> {
         dropped: Mutex::new(vec![]),
         share: Mutex::new(None),
         metal_version: Mutex::new(None),
+        app_ids: Mutex::new(vec![]),
     });
     if let Some(id) = &settings.apple_id {
         ui.set_apple_id(id.clone().into());
@@ -887,6 +952,14 @@ fn main() -> Result<()> {
     });
     let a = app.clone();
     ui.on_stop_share(move || a.stop_share());
+    let a = app.clone();
+    ui.on_load_app_ids(move || a.load_app_ids());
+    let a = app.clone();
+    ui.on_add_more_ram(move || {
+        if let Some(w) = a.ui.upgrade() {
+            a.add_more_ram(w.get_app_id_index());
+        }
+    });
     let a = app.clone();
     ui.on_save_downloads(move || {
         if let Some(g) = a.ui.upgrade().and_then(|u| a.selected_game(&u)) {

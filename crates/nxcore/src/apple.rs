@@ -10,7 +10,7 @@ use idevice::{IdeviceService, lockdown::LockdownClient, provider::UsbmuxdProvide
 use isideload::{
     anisette::remote_v3::RemoteV3AnisetteProvider,
     auth::apple_account::{AppleAccount, TwoFactorCallbackParams, TwoFactorCallbackResponse},
-    dev::{certificates::CertificatesApi, developer_session::DeveloperSession},
+    dev::{app_ids::AppIdsApi, certificates::CertificatesApi, developer_session::DeveloperSession},
     sideload::{
         SideloaderBuilder,
         builder::{ExtensionsBehavior, ExtensionsBehaviorSelection, MaxCertsBehavior},
@@ -183,6 +183,36 @@ impl Session {
         ))
     }
 
+    /// The account's App IDs (one per app installed with it). `memory_limit`: whether Apple lists the Increased Memory Limit for it, when its
+    /// features say so (None: not told)
+    pub async fn app_ids(&mut self) -> Result<Vec<AppIdInfo>> {
+        let team = self.sideloader.get_team().await.map_err(report)?;
+        let list = self.sideloader.get_dev_session().list_app_ids(&team, None).await.map_err(report)?;
+        let mut out: Vec<AppIdInfo> = list
+            .app_ids
+            .into_iter()
+            .map(|a| {
+                let memory_limit = a.features.iter().find(|(k, _)| k.to_lowercase().contains("memory")).and_then(|(_, v)| v.as_boolean());
+                AppIdInfo { id: a.app_id_id, identifier: a.identifier, name: a.name, memory_limit }
+            })
+            .collect();
+        out.sort_by(|a, b| a.identifier.cmp(&b.identifier));
+        tracing::info!(count = out.len(), "app IDs listed");
+        Ok(out)
+    }
+
+    /// Adds the Increased Memory Limit capability to an App ID (what GetMoreRam does): the app gets it once it is signed again with a new
+    /// provisioning profile (reinstalled, or refreshed in its sideloading tool). LiveContainer passes it on to the apps it runs.
+    pub async fn add_memory_limit(&mut self, identifier: &str) -> Result<()> {
+        let team = self.sideloader.get_team().await.map_err(report)?;
+        let dev = self.sideloader.get_dev_session();
+        let list = dev.list_app_ids(&team, None).await.map_err(report)?;
+        let app = list.app_ids.into_iter().find(|a| a.identifier == identifier).ok_or_else(|| anyhow!("no App ID {identifier} in this account"))?;
+        dev.add_increased_memory_limit(&team, &app).await.map_err(report)?;
+        tracing::info!(app_id = identifier, "Increased Memory Limit added");
+        Ok(())
+    }
+
     /// The team ID (the suffix sideloaded bundle IDs get)
     pub async fn team_id(&mut self) -> Result<String> {
         Ok(self.sideloader.get_team().await.map_err(report)?.team_id)
@@ -224,6 +254,15 @@ pub mod credentials {
             let _ = e.delete_credential();
         }
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct AppIdInfo {
+    pub id: String,
+    /// The bundle ID as registered (sideloaded apps carry the team ID: com.kdt.livecontainer.ABCDE12345)
+    pub identifier: String,
+    pub name: String,
+    pub memory_limit: Option<bool>,
 }
 
 #[derive(Debug, Clone)]

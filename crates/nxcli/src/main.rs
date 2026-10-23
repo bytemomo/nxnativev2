@@ -84,6 +84,18 @@ enum Cmd {
         #[arg(long, default_value_t = nxcore::serve::DEFAULT_PORT)]
         port: u16,
     },
+    /// List the account's App IDs (the apps installed with it)
+    AppIds {
+        #[arg(long)]
+        apple_id: Option<String>,
+    },
+    /// Add the Increased Memory Limit to an App ID (e.g. LiveContainer's); then reinstall or refresh that app
+    MoreRam {
+        /// the App ID's bundle ID, or a part of it (e.g. livecontainer)
+        app: String,
+        #[arg(long)]
+        apple_id: Option<String>,
+    },
     /// Forget the Apple ID password saved in the system keyring
     Forget { apple_id: String },
 }
@@ -286,7 +298,7 @@ async fn main() -> Result<()> {
         Cmd::InstallIpa { ipa, apple_id, device } => {
             let udid = pick_device(device).await?;
             let mut session = sign_in(&store, &mut settings, apple_id).await?;
-            apple::install(&mut session, &udid, &ipa, false, Arc::new(|f| eprint!("\rinstalling {:.0}%   ", f * 100.0))).await?;
+            apple::install(&mut session, &udid, &ipa, settings.increased_memory_limit, Arc::new(|f| eprint!("\rinstalling {:.0}%   ", f * 100.0))).await?;
             eprintln!("\rinstalled            ");
         }
         Cmd::Serve { game, apple_id, no_certificate, port } => {
@@ -312,6 +324,25 @@ async fn main() -> Result<()> {
                     eprint!("\rIPA sent: {:.2} GB   ", sent as f64 / 1e9);
                 }
             }
+        }
+        Cmd::AppIds { apple_id } => {
+            let mut session = sign_in(&store, &mut settings, apple_id).await?;
+            for a in session.app_ids().await? {
+                let m = match a.memory_limit { Some(true) => "  [more RAM]", Some(false) => "", None => "" };
+                println!("{}  {}{m}", a.identifier, a.name);
+            }
+        }
+        Cmd::MoreRam { app, apple_id } => {
+            let mut session = sign_in(&store, &mut settings, apple_id).await?;
+            let ids = session.app_ids().await?;
+            let hits: Vec<_> = ids.iter().filter(|a| a.identifier == app || a.identifier.to_lowercase().contains(&app.to_lowercase())).collect();
+            let target = match hits.as_slice() {
+                [one] => one.identifier.clone(),
+                [] => bail!("no App ID matches {app}: see `nxnative app-ids`"),
+                many => bail!("{} App IDs match {app}: {}", many.len(), many.iter().map(|a| a.identifier.as_str()).collect::<Vec<_>>().join(", ")),
+            };
+            session.add_memory_limit(&target).await?;
+            println!("Increased Memory Limit added to {target}. Now reinstall or refresh that app (its new provisioning profile carries it).");
         }
         Cmd::Export { game, to, apple_id } => {
             let id = parse_id(&game)?;
