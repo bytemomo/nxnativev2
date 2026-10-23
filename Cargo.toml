@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/nxcore", "crates/nxcli", "crates/nxapp", "crates/xtask"]
+members = ["crates/nxcore", "crates/nxcli", "crates/nxapp", "crates/xtask", "crates/launchers"]
 
 [workspace.package]
 version = "0.1.0"

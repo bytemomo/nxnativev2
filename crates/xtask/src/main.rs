@@ -1,14 +1,15 @@
-//! `cargo xtask bundle`: the packaged app, one executable per platform with everything the build needs appended (see nxcore::bundle):
+//! `cargo xtask bundle [--target linux|windows]`: the packaged app, one executable per platform with everything the build needs appended
+//! (see nxcore::bundle). Built on Linux x86_64 for both targets (Windows: cross-compiled with mingw-w64, Windows archives and wheels):
 //!
 //! 1. nxnative: the revision of patches/nxnative/UPSTREAM, with patches/nxnative/common and patches/nxnative/<platform> applied
-//! 2. Python: python-build-standalone with the pipeline's modules (pip)
+//! 2. Python: python-build-standalone with the pipeline's modules (pip; Windows wheels for Windows)
 //! 3. the .NET runtime, and nx_extract published for it
 //! 4. the iOS app's Swift sources compiled to one arm64 iOS object (swiftc with Xcode's SDK and Swift resources from the data folder)
-//! 5. spirv-cross built from source (static libstdc++)
+//! 5. spirv-cross built from source (static runtime; mingw for Windows)
 //! 6. clang and lld with clang's headers, from LLVM's release
+//! 7. Windows: xcrun.exe and the dotnet dll launcher (crates/launchers): the pipeline runs these by name
 //!
-//! Downloads are cached in target/bundle-cache; the result goes to dist/. Linux x86_64 for now (Windows: patches/nxnative/windows and its
-//! own archives).
+//! Downloads are cached in target/bundle-cache; the result goes to dist/.
 
 use std::fs::{self, File};
 use std::io::{Read, Write};
@@ -24,19 +25,21 @@ const DOTNET_RUNTIME: &str = "10.0.13";
 const SPIRV_CROSS_TAG: &str = "vulkan-sdk-1.4.363.0";
 const LLVM_VERSION: &str = "23.1.4";
 const MIN_IOS: &str = "26.0";
+const WIN_RUST_TARGET: &str = "x86_64-pc-windows-gnu";
 
 struct Ctx {
     root: PathBuf,
     cache: PathBuf,
     payload: PathBuf,
     platform: &'static str,
+    windows: bool,
 }
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("bundle") => bundle(&args[1..]),
-        _ => bail!("usage: cargo xtask bundle [--sdk-dir <folder with iPhoneOS*.sdk and swift-resources>] [--cli] [--keep]"),
+        _ => bail!("usage: cargo xtask bundle [--target linux|windows] [--sdk-dir <folder with iPhoneOS*.sdk and swift-resources>] [--cli] [--keep]"),
     }
 }
 
@@ -50,20 +53,31 @@ fn run(cmd: &mut Command) -> Result<()> {
     Ok(())
 }
 
+fn arg<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
+    args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).map(String::as_str)
+}
+
 fn bundle(args: &[String]) -> Result<()> {
-    ensure!(cfg!(target_os = "linux") && cfg!(target_arch = "x86_64"), "bundling is implemented for Linux x86_64 for now");
+    ensure!(cfg!(target_os = "linux") && cfg!(target_arch = "x86_64"), "bundles are built on Linux x86_64 (for Linux and Windows)");
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize()?;
-    let sdk_dir = match args.iter().position(|a| a == "--sdk-dir") {
-        Some(i) => PathBuf::from(args.get(i + 1).context("--sdk-dir needs a folder")?),
+    let windows = match arg(args, "--target").unwrap_or("linux") {
+        "linux" => false,
+        "windows" => true,
+        t => bail!("unknown target {t}: linux or windows"),
+    };
+    let sdk_dir = match arg(args, "--sdk-dir") {
+        Some(d) => PathBuf::from(d),
         None => {
             let s = nxcore::settings::Settings::load()?;
             nxcore::store::Store::new(s.data_dir()?)?.sdk_dir()
         }
     };
+    let name = if windows { "windows-x64" } else { "linux-x64" };
     let ctx = Ctx {
         cache: root.join("target/bundle-cache"),
-        payload: root.join("target/bundle/linux-x64/payload"),
-        platform: "linux",
+        payload: root.join(format!("target/bundle/{name}/payload")),
+        platform: if windows { "windows" } else { "linux" },
+        windows,
         root: root.clone(),
     };
     if ctx.payload.exists() {
@@ -79,23 +93,36 @@ fn bundle(args: &[String]) -> Result<()> {
     swift_object(&ctx, &sdk_dir)?;
     spirv_cross(&ctx)?;
     llvm(&ctx)?;
-
+    if windows {
+        launchers(&ctx)?;
+    }
     shrink(&ctx)?;
 
     say("building the app (profile dist: no debug info, stripped)");
-    run(Command::new("cargo").args(["build", "--profile", "dist", "-p", "nxapp"]).current_dir(&root))?;
-    let exe = root.join("target/dist/nxnativev2");
-    let out = root.join("dist/nxnativev2-linux-x64");
-    pack(&ctx, &exe, &out)?;
+    let (exe, out) = app(&ctx, "nxapp", "nxnativev2")?;
+    pack(&ctx, &exe, &root.join(format!("dist/nxnativev2-{name}{out}")))?;
     if args.iter().any(|a| a == "--cli") {
         // the command-line front end with the same payload (testing, scripting)
-        run(Command::new("cargo").args(["build", "--profile", "dist", "-p", "nxcli"]).current_dir(&root))?;
-        pack(&ctx, &root.join("target/dist/nxnative"), &root.join("dist/nxnative-cli-linux-x64"))?;
+        let (exe, out) = app(&ctx, "nxcli", "nxnative")?;
+        pack(&ctx, &exe, &root.join(format!("dist/nxnative-cli-{name}{out}")))?;
     }
     if !args.iter().any(|a| a == "--keep") {
         let _ = fs::remove_dir_all(ctx.payload.parent().unwrap());
     }
     Ok(())
+}
+
+/// Builds a package of the workspace for the target; returns the executable and the file extension of the output
+fn app(ctx: &Ctx, package: &str, bin: &str) -> Result<(PathBuf, &'static str)> {
+    let mut cmd = Command::new("cargo");
+    cmd.args(["build", "--profile", "dist", "-p", package]).current_dir(&ctx.root);
+    if ctx.windows {
+        cmd.args(["--target", WIN_RUST_TARGET]);
+        run(&mut cmd)?;
+        return Ok((ctx.root.join(format!("target/{WIN_RUST_TARGET}/dist/{bin}.exe")), ".exe"));
+    }
+    run(&mut cmd)?;
+    Ok((ctx.root.join(format!("target/dist/{bin}")), ""))
 }
 
 /// Downloads `url` into the cache (once) and returns its path
@@ -115,7 +142,132 @@ fn fetch(ctx: &Ctx, url: &str, name: &str) -> Result<PathBuf> {
     Ok(p)
 }
 
-/// Unpacks a .tar.gz / .tar.zst into `out`, dropping `strip` leading components; `keep(path)` picks the entries (after stripping)
+/// Unpacks a .zip into `out`, dropping `strip` leading components
+fn unzip(archive: &Path, out: &Path, strip: usize) -> Result<()> {
+    let mut z = zip::ZipArchive::new(File::open(archive)?)?;
+    for i in 0..z.len() {
+        let mut e = z.by_index(i)?;
+        let Some(rel) = e.enclosed_name() else { continue };
+        let rel: PathBuf = rel.components().skip(strip).collect();
+        if rel.as_os_str().is_empty() {
+            continue;
+        }
+        let dst = out.join(rel);
+        if e.is_dir() {
+            fs::create_dir_all(&dst)?;
+        } else {
+            fs::create_dir_all(dst.parent().unwrap())?;
+            std::io::copy(&mut e, &mut File::create(&dst)?)?;
+        }
+    }
+    Ok(())
+}
+
+fn python(ctx: &Ctx) -> Result<()> {
+    let triple = if ctx.windows { "x86_64-pc-windows-msvc" } else { "x86_64-unknown-linux-gnu" };
+    // the stripped variant: binutils' strip breaks these binaries (python3 then fails with "symbol lookup error")
+    let name = format!("cpython-{PY_VERSION}+{PY_RELEASE}-{triple}-install_only_stripped.tar.gz");
+    let url = format!("https://github.com/astral-sh/python-build-standalone/releases/download/{PY_RELEASE}/{name}");
+    let tarball = fetch(ctx, &url, &name)?;
+    let out = ctx.payload.join("python");
+    say(format!("Python {PY_VERSION} ({}) with {}", ctx.platform, PY_MODULES.join(" ")));
+    untar(&tarball, &out, 1, &|_| true)?;
+    if ctx.windows {
+        // Windows wheels, installed by this computer's pip into the Windows Python's site-packages
+        run(Command::new("python3")
+            .args(["-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--quiet", "--no-compile", "--only-binary=:all:", "--platform", "win_amd64"])
+            .args(["--python-version", "3.13", "--implementation", "cp", "--target"])
+            .arg(out.join("Lib/site-packages"))
+            .args(PY_MODULES))?;
+    } else {
+        run(Command::new(out.join("bin/python3")).args(["-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--quiet", "--no-compile"]).args(PY_MODULES))?;
+    }
+    Ok(())
+}
+
+fn dotnet(ctx: &Ctx) -> Result<()> {
+    let (rid, ext) = if ctx.windows { ("win-x64", "zip") } else { ("linux-x64", "tar.gz") };
+    let name = format!("dotnet-runtime-{DOTNET_RUNTIME}-{rid}.{ext}");
+    let archive = fetch(ctx, &format!("https://builds.dotnet.microsoft.com/dotnet/Runtime/{DOTNET_RUNTIME}/{name}"), &name)?;
+    say(format!(".NET runtime {DOTNET_RUNTIME} ({rid})"));
+    if ctx.windows { unzip(&archive, &ctx.payload.join("dotnet"), 0)? } else { untar(&archive, &ctx.payload.join("dotnet"), 0, &|_| true)? }
+    // nx_extract for that runtime (framework-dependent), with the build host's .NET SDK
+    say(format!("nx_extract (dotnet publish -r {rid})"));
+    let out = ctx.payload.join("prebuilt/nx_extract");
+    run(Command::new("dotnet")
+        .args(["publish", "-c", "Release", "-r", rid, "--self-contained", "false", "-v", "quiet", "-nologo", "-o"])
+        .arg(&out)
+        .arg(ctx.payload.join("nxnative/dm/tools/nx_extract"))
+        .env("DOTNET_CLI_TELEMETRY_OPTOUT", "1"))?;
+    ensure!(out.join(if ctx.windows { "nx_extract.exe" } else { "nx_extract" }).is_file(), "dotnet publish made no nx_extract");
+    // the publish leaves bin/obj in the checkout
+    for d in ["bin", "obj"] {
+        let _ = fs::remove_dir_all(ctx.payload.join("nxnative/dm/tools/nx_extract").join(d));
+    }
+    Ok(())
+}
+
+fn spirv_cross(ctx: &Ctx) -> Result<()> {
+    let src = ctx.cache.join(format!("SPIRV-Cross-{SPIRV_CROSS_TAG}"));
+    if !src.join("CMakeLists.txt").is_file() {
+        say(format!("cloning SPIRV-Cross {SPIRV_CROSS_TAG}"));
+        let _ = fs::remove_dir_all(&src);
+        run(Command::new("git").args(["clone", "-q", "--depth", "1", "-b", SPIRV_CROSS_TAG, "https://github.com/KhronosGroup/SPIRV-Cross.git"]).arg(&src))?;
+    }
+    let build = src.join(if ctx.windows { "build-mingw" } else { "build-static" });
+    let bin = build.join(if ctx.windows { "spirv-cross.exe" } else { "spirv-cross" });
+    if !bin.is_file() {
+        say(format!("building spirv-cross ({})", ctx.platform));
+        let mut cmake = Command::new("cmake");
+        cmake.arg("-S").arg(&src).arg("-B").arg(&build);
+        cmake.args(["-G", "Ninja", "-DCMAKE_BUILD_TYPE=Release", "-DSPIRV_CROSS_SHARED=OFF", "-DSPIRV_CROSS_STATIC=ON", "-DSPIRV_CROSS_ENABLE_TESTS=OFF", "-DSPIRV_CROSS_CLI=ON"]);
+        if ctx.windows {
+            cmake.args(["-DCMAKE_SYSTEM_NAME=Windows", "-DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc", "-DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++", "-DCMAKE_EXE_LINKER_FLAGS=-static"]);
+        } else {
+            cmake.arg("-DCMAKE_EXE_LINKER_FLAGS=-static-libstdc++ -static-libgcc");
+        }
+        run(&mut cmake)?;
+        run(Command::new("cmake").arg("--build").arg(&build).args(["--target", "spirv-cross"]))?;
+    }
+    let dst = ctx.payload.join("bin").join(bin.file_name().unwrap());
+    fs::create_dir_all(dst.parent().unwrap())?;
+    fs::copy(&bin, &dst)?;
+    say("spirv-cross");
+    Ok(())
+}
+
+fn llvm(ctx: &Ctx) -> Result<()> {
+    let name = if ctx.windows { format!("clang+llvm-{LLVM_VERSION}-x86_64-pc-windows-msvc.tar.zst") } else { format!("LLVM-{LLVM_VERSION}-Linux-X64.tar.zst") };
+    let tarball = fetch(ctx, &format!("https://github.com/llvm/llvm-project/releases/download/llvmorg-{LLVM_VERSION}/{name}"), &name)?;
+    let major = LLVM_VERSION.split('.').next().unwrap();
+    say(format!("clang and lld {LLVM_VERSION} (of LLVM's release, {})", ctx.platform));
+    let out = ctx.payload.join("llvm");
+    let keep_bin: Vec<String> = if ctx.windows {
+        vec!["bin/clang.exe".into(), "bin/ld64.lld.exe".into()]
+    } else {
+        vec![format!("bin/clang-{major}"), "bin/clang".into(), "bin/lld".into(), "bin/ld64.lld".into()]
+    };
+    let headers = format!("lib/clang/{major}/include");
+    untar(&tarball, &out, 1, &|p: &Path| {
+        let s = p.to_string_lossy().replace('\\', "/");
+        keep_bin.iter().any(|k| s == *k) || s == format!("lib/clang/{major}") || s == "lib/clang" || s == "lib" || s == "bin" || s.starts_with(&headers)
+    })?;
+    let (clang, ld) = if ctx.windows { ("bin/clang.exe", "bin/ld64.lld.exe") } else { ("bin/clang", "bin/ld64.lld") };
+    ensure!(out.join(clang).exists() && out.join(ld).exists(), "the LLVM release had no clang / ld64.lld");
+    Ok(())
+}
+
+/// Windows: the executables the pipeline runs by name (crates/launchers)
+fn launchers(ctx: &Ctx) -> Result<()> {
+    say("launchers (xcrun.exe, dotnet-dll-launcher.exe)");
+    run(Command::new("cargo").args(["build", "--profile", "dist", "-p", "launchers", "--target", WIN_RUST_TARGET]).current_dir(&ctx.root))?;
+    let from = ctx.root.join(format!("target/{WIN_RUST_TARGET}/dist"));
+    for exe in ["xcrun.exe", "dotnet-dll-launcher.exe"] {
+        fs::copy(from.join(exe), ctx.payload.join("bin").join(exe))?;
+    }
+    Ok(())
+}
+
 fn untar(archive: &Path, out: &Path, strip: usize, keep: &dyn Fn(&Path) -> bool) -> Result<()> {
     let f = File::open(archive)?;
     let reader: Box<dyn Read> = if archive.to_string_lossy().ends_with(".zst") {
@@ -148,12 +300,10 @@ fn untar(archive: &Path, out: &Path, strip: usize, keep: &dyn Fn(&Path) -> bool)
     }
     Ok(())
 }
-
 fn upstream(ctx: &Ctx, key: &str) -> Result<String> {
     let s = fs::read_to_string(ctx.root.join("patches/nxnative/UPSTREAM"))?;
     s.lines().find_map(|l| l.strip_prefix(key).and_then(|r| r.strip_prefix('\t'))).map(|v| v.trim().to_string()).with_context(|| format!("no {key} in UPSTREAM"))
 }
-
 fn nxnative(ctx: &Ctx) -> Result<()> {
     let (repo, rev) = (upstream(ctx, "repo")?, upstream(ctx, "rev")?);
     let tarball = fetch(ctx, &format!("{repo}/archive/{rev}.tar.gz"), &format!("nxnative-{rev}.tar.gz"))?;
@@ -172,40 +322,6 @@ fn nxnative(ctx: &Ctx) -> Result<()> {
     fs::write(out.join(".nxnativev2-revision"), format!("{repo}\t{rev}\n"))?;
     Ok(())
 }
-
-fn python(ctx: &Ctx) -> Result<()> {
-    // the stripped variant: binutils' strip breaks these binaries (python3 then fails with "symbol lookup error")
-    let name = format!("cpython-{PY_VERSION}+{PY_RELEASE}-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz");
-    let url = format!("https://github.com/astral-sh/python-build-standalone/releases/download/{PY_RELEASE}/{name}");
-    let tarball = fetch(ctx, &url, &name)?;
-    let out = ctx.payload.join("python");
-    say(format!("Python {PY_VERSION} with {}", PY_MODULES.join(" ")));
-    untar(&tarball, &out, 1, &|_| true)?;
-    run(Command::new(out.join("bin/python3")).args(["-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--quiet", "--no-compile"]).args(PY_MODULES))?;
-    Ok(())
-}
-
-fn dotnet(ctx: &Ctx) -> Result<()> {
-    let name = format!("dotnet-runtime-{DOTNET_RUNTIME}-linux-x64.tar.gz");
-    let tarball = fetch(ctx, &format!("https://builds.dotnet.microsoft.com/dotnet/Runtime/{DOTNET_RUNTIME}/{name}"), &name)?;
-    say(format!(".NET runtime {DOTNET_RUNTIME}"));
-    untar(&tarball, &ctx.payload.join("dotnet"), 0, &|_| true)?;
-    // nx_extract for that runtime (framework-dependent), with the build host's .NET SDK
-    say("nx_extract (dotnet publish)");
-    let out = ctx.payload.join("prebuilt/nx_extract");
-    run(Command::new("dotnet")
-        .args(["publish", "-c", "Release", "-r", "linux-x64", "--self-contained", "false", "-v", "quiet", "-nologo", "-o"])
-        .arg(&out)
-        .arg(ctx.payload.join("nxnative/dm/tools/nx_extract"))
-        .env("DOTNET_CLI_TELEMETRY_OPTOUT", "1"))?;
-    ensure!(out.join("nx_extract").is_file(), "dotnet publish made no nx_extract");
-    // the publish leaves bin/obj in the checkout
-    for d in ["bin", "obj"] {
-        let _ = fs::remove_dir_all(ctx.payload.join("nxnative/dm/tools/nx_extract").join(d));
-    }
-    Ok(())
-}
-
 fn swift_object(ctx: &Ctx, sdk_dir: &Path) -> Result<()> {
     let sources = ctx.payload.join("nxnative/dm/ios/Sources");
     let mut files: Vec<PathBuf> = fs::read_dir(&sources)?.filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "swift")).collect();
@@ -237,60 +353,19 @@ fn swift_object(ctx: &Ctx, sdk_dir: &Path) -> Result<()> {
         .arg(&out))?;
     Ok(())
 }
-
-fn spirv_cross(ctx: &Ctx) -> Result<()> {
-    let src = ctx.cache.join(format!("SPIRV-Cross-{SPIRV_CROSS_TAG}"));
-    if !src.join("CMakeLists.txt").is_file() {
-        say(format!("cloning SPIRV-Cross {SPIRV_CROSS_TAG}"));
-        let _ = fs::remove_dir_all(&src);
-        run(Command::new("git").args(["clone", "-q", "--depth", "1", "-b", SPIRV_CROSS_TAG, "https://github.com/KhronosGroup/SPIRV-Cross.git"]).arg(&src))?;
-    }
-    let build = src.join("build-static");
-    let bin = build.join("spirv-cross");
-    if !bin.is_file() {
-        say("building spirv-cross");
-        run(Command::new("cmake")
-            .arg("-S")
-            .arg(&src)
-            .arg("-B")
-            .arg(&build)
-            .args(["-G", "Ninja", "-DCMAKE_BUILD_TYPE=Release", "-DSPIRV_CROSS_SHARED=OFF", "-DSPIRV_CROSS_STATIC=ON", "-DSPIRV_CROSS_ENABLE_TESTS=OFF", "-DSPIRV_CROSS_CLI=ON"])
-            .arg("-DCMAKE_EXE_LINKER_FLAGS=-static-libstdc++ -static-libgcc"))?;
-        run(Command::new("cmake").arg("--build").arg(&build).args(["--target", "spirv-cross"]))?;
-    }
-    let dst = ctx.payload.join("bin/spirv-cross");
-    fs::create_dir_all(dst.parent().unwrap())?;
-    fs::copy(&bin, &dst)?;
-    say("spirv-cross");
-    Ok(())
-}
-
-fn llvm(ctx: &Ctx) -> Result<()> {
-    let name = format!("LLVM-{LLVM_VERSION}-Linux-X64.tar.zst");
-    let tarball = fetch(ctx, &format!("https://github.com/llvm/llvm-project/releases/download/llvmorg-{LLVM_VERSION}/{name}"), &name)?;
-    let major = LLVM_VERSION.split('.').next().unwrap();
-    say(format!("clang and lld {LLVM_VERSION} (of LLVM's release)"));
-    let out = ctx.payload.join("llvm");
-    let keep_bin = [format!("bin/clang-{major}"), "bin/clang".into(), "bin/lld".into(), "bin/ld64.lld".into()];
-    let headers = format!("lib/clang/{major}/include");
-    untar(&tarball, &out, 1, &|p: &Path| {
-        let s = p.to_string_lossy();
-        keep_bin.iter().any(|k| s == *k) || s == format!("lib/clang/{major}") || s == "lib/clang" || s == "lib" || s.starts_with(&headers)
-    })?;
-    ensure!(out.join("bin/clang").exists() && out.join("bin/ld64.lld").exists(), "the LLVM release had no clang / ld64.lld");
-    Ok(())
-}
-
-/// What the build never uses: Python's Tk / IDLE / pip / headers / bytecode caches
 fn shrink(ctx: &Ctx) -> Result<()> {
     let py = ctx.payload.join("python");
-    for rel in ["lib/python3.13/idlelib", "lib/python3.13/tkinter", "lib/python3.13/turtledemo", "lib/python3.13/ensurepip", "lib/python3.13/site-packages/pip", "share", "include"] {
+    let lib = if ctx.windows { "Lib" } else { "lib/python3.13" };
+    for rel in ["idlelib", "tkinter", "turtledemo", "ensurepip", "site-packages/pip"] {
+        let _ = fs::remove_dir_all(py.join(lib).join(rel));
+    }
+    for rel in ["share", "include", "tcl"] {
         let _ = fs::remove_dir_all(py.join(rel));
     }
-    for e in fs::read_dir(py.join("lib"))?.filter_map(|e| e.ok()) {
+    for e in fs::read_dir(py.join(if ctx.windows { "DLLs" } else { "lib" }))?.filter_map(|e| e.ok()) {
         let n = e.file_name().to_string_lossy().into_owned();
-        if n.starts_with("tcl") || n.starts_with("tk") || n.starts_with("itcl") || n.starts_with("thread") {
-            let _ = fs::remove_dir_all(e.path());
+        if n.starts_with("tcl") || n.starts_with("tk") || n.starts_with("itcl") || n.starts_with("thread") || n.starts_with("_tkinter") {
+            let _ = if e.path().is_dir() { fs::remove_dir_all(e.path()) } else { fs::remove_file(e.path()) };
         }
     }
     // bytecode caches (rebuilt on demand); binaries are left as they are: Python comes stripped, LLVM's release nearly so, and binutils'
@@ -310,8 +385,6 @@ fn shrink(ctx: &Ctx) -> Result<()> {
     }
     Ok(())
 }
-
-/// tar + zstd of the payload, appended to the executable with the trailer nxcore::bundle reads
 fn pack(ctx: &Ctx, exe: &Path, out: &Path) -> Result<()> {
     let archive = ctx.payload.with_extension("tar.zst");
     if !archive.is_file() {

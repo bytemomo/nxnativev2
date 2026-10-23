@@ -7,7 +7,7 @@
 //! dotnet/                   the .NET runtime (the shader translator and nx_extract run on it)
 //! prebuilt/nx_extract/      nx_extract, compiled ahead of time
 //! prebuilt/swift_DmIOS.o    the iOS app's Swift sources, compiled ahead of time (an arm64 iOS object: the same on every computer)
-//! bin/                      spirv-cross
+//! bin/                      spirv-cross (Windows: also xcrun.exe and dotnet-dll-launcher.exe, which the pipeline runs by name)
 //! llvm/bin, llvm/lib/clang  clang and lld (ld64.lld) with clang's headers
 //! ```
 //!
@@ -165,6 +165,10 @@ impl Paths {
         ];
         if self.swift_object().is_file() {
             v.push(("DM_SWIFT_OBJECT".into(), s(self.swift_object())));
+        }
+        if cfg!(windows) {
+            // the translator's launcher (patches/nxnative/windows): an .exe that runs <its name>.dll with dotnet
+            v.push(("DM_DOTNET_LAUNCHER".into(), s(self.root.join("bin/dotnet-dll-launcher.exe"))));
         }
         v
     }

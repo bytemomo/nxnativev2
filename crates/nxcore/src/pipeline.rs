@@ -196,6 +196,8 @@ pub fn start(settings: &Settings, store: &Store, id: u64, opts: &Options, on_eve
         .env("DM_IOS_SDK", &sdk)
         .env("DM_SWIFT_RESOURCES", store.swift_resources().unwrap_or_default())
         .env("TMPDIR", store.tmp_dir())
+        .env("TEMP", store.tmp_dir())
+        .env("TMP", store.tmp_dir())
         .env("PYTHONUNBUFFERED", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

@@ -245,12 +245,303 @@ index c1b6dd9..07fb0dd 100755
  [ -n "$APP" ] && [ -d "$APP" ] || die "no built app"; t "app: $APP"
  
  # Straight from the sources: the app without its signature, and without the folders an app built before pack_ipa.py still has (DerivedData keeps resources that left the project;
+diff --git a/dm/ios/tools/build_ipa_portable.py b/dm/ios/tools/build_ipa_portable.py
+new file mode 100755
+index 0000000..6440ef3
+--- /dev/null
++++ b/dm/ios/tools/build_ipa_portable.py
+@@ -0,0 +1,143 @@
++#!/usr/bin/env python3
++# build_ipa.sh's IPA path without bash, make or Xcode (Linux, Windows): the same steps, inputs (environment) and step lines (the NSP script's progress
++# reads "generate Gen/", "xcodebuild", "pack IPA"). Gen/ comes from gen_build_portable.py, the app from build_app_linux.py (clang + ld64.lld against the
++# iPhoneOS SDK), the archive from pack_ipa.py. The app icon goes to build_app_linux.py as DM_ICON (no actool). --prepare-xcode needs Xcode: use build_ipa.sh on a Mac.
++# Usage: build_ipa_portable.py [output.ipa]   Environment: as build_ipa.sh (GAME, W, PATCHED, ROMFS, MSL_IOS, AOC, GFXAPI, DM_DISPLAY_NAME, DM_BUNDLE_ID,
++#   DM_APP_VERSION, DM_SHOW_FPS, DM_LANG, DM_ICON, DM_ENV_FILE, STD_FONT, LETTER_FONT, FONT_PY)
++import glob, os, shutil, subprocess, sys, time
++
++IOS = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
++DM = os.path.dirname(IOS)
++PY = sys.executable
++env = os.environ
++
++
++def t(msg):
++    print(f'[{time.strftime("%H:%M:%S")}] {msg}', flush=True)
++
++
++def die(msg):
++    t(f'FAIL: {msg}')
++    sys.exit(1)
++
++
++def out(*cmd, what):
++    r = subprocess.run(cmd, capture_output=True, text=True)
++    if r.returncode: die(f'{what}: {r.stderr.strip()[-500:]}')
++    return r.stdout.strip()
++
++
++if sys.argv[1:2] == ['--prepare-xcode']: die('--prepare-xcode needs Xcode (macOS): use build_ipa.sh there')
++game = env.get('GAME') or die('GAME is not set: GAME=<base game title ID>')
++games_py = os.path.join(DM, 'games', 'game.py')
++gd = out(PY, games_py, 'dir', game, what=f'no game profile {game}')
++if not os.path.isfile(os.path.join(gd, 'game.tsv')): die(f'no game profile {gd}/game.tsv')
++gp = lambda key: out(PY, games_py, game, key, what=f'game profile {gd}: {key}')
++w = env.get('W') or die('W is not set: W=<the game\'s work folder>')
++pkg = gp('package')
++patched = env.get('PATCHED') or os.path.join(w, 'build', f'patched_{pkg}')
++romfs = env.get('ROMFS') or os.path.join(w, 'data', pkg, 'RomFS')
++msl_ios = env.get('MSL_IOS') or os.path.join(w, 'build', 'ios', 'dmsh_b')
++aoc = env['AOC'] if 'AOC' in env else os.path.join(w, 'data', 'aoc')
++out_ipa = sys.argv[1] if len(sys.argv) > 1 else os.path.join(os.path.dirname(w), gp('ipa'))
++o = os.path.join(w, 'build', 'ios', 'pkg'); dd = os.path.join(o, 'dd')
++mods = gp('modules').split(); marker = gp('romfs_marker')
++nacp = os.path.join(w, 'data', 'v0', 'control.nacp')
++if not os.path.isfile(nacp): nacp = os.path.join(os.path.dirname(romfs), 'control.nacp')
++nacp_py = os.path.join(DM, 'tools', 'nacp.py')
++name = env.get('DM_DISPLAY_NAME') or out(PY, nacp_py, nacp, what=f'no game name in {nacp} (re-extract with nx_extract, or set DM_DISPLAY_NAME)')
++vnacp = os.path.join(os.path.dirname(romfs), 'control.nacp')
++if not os.path.isfile(vnacp): vnacp = os.path.join(w, 'data', 'v0', 'control.nacp')
++version = env.get('DM_APP_VERSION')
++if not version:
++    r = subprocess.run([PY, nacp_py, '--version', vnacp], capture_output=True, text=True)
++    version = r.stdout.strip() if r.returncode == 0 and r.stdout.strip() else '1.0'
++    if r.returncode: t(f'no display version in {vnacp}: the app version is 1.0')
++child = dict(env, LC_ALL='C', DM_BUNDLE_ID=env.get('DM_BUNDLE_ID') or f'org.nxnative.{game.lower()}', DM_DISPLAY_NAME=name, DM_APP_VERSION=version,
++             DM_APP_CATEGORY=gp('app_category'), DM_TEAM_ID=env.get('DM_TEAM_ID') or '0000000000', DM_SHOW_FPS='YES' if env.get('DM_SHOW_FPS') == '1' else 'NO',
++             DM_LANG=env.get('DM_LANG') or 'en-US', DM_SCHEME_NAME='DmIOS', GAME=game)
++for m in mods:
++    if not (os.path.isfile(os.path.join(patched, f'{m}.patched.bin')) and os.path.isfile(os.path.join(patched, f'{m}.fixups.tsv'))):
++        die(f'no rewritten module {patched}/{m} (run dm/tools/patch_nso.py first)')
++if not os.path.exists(os.path.join(romfs, marker)): die(f'no RomFS at {romfs} (missing {marker})')
++chain = ''
++for line in open(os.path.join(gd, 'dmsh_chain.h')):
++    if line.startswith('#define DMSH_CHAIN "'): chain = line.split('"')[1]
++has_libs = lambda d: os.path.isdir(d) and any(f.endswith('_b.metallib') for f in os.listdir(d))
++gfx = env.get('GFXAPI') or ('nvn' if has_libs(os.path.join(msl_ios, f'b-{chain}')) else 'vulkan' if os.path.isfile(os.path.join(msl_ios, 'vk', 'vk_shaders.metallib'))
++                            else 'gl' if os.path.isfile(os.path.join(msl_ios, 'gl', 'gl_shaders.metallib')) else 'nvn')
++if gfx == 'vulkan' and not os.path.isfile(os.path.join(msl_ios, 'vk', 'vk_shaders.metallib')): die(f'no iOS Vulkan shader library {msl_ios}/vk')
++elif gfx == 'gl' and not os.path.isfile(os.path.join(msl_ios, 'gl', 'gl_shaders.metallib')): die(f'no iOS GL shader library {msl_ios}/gl')
++elif gfx == 'nvn' and not (chain and has_libs(os.path.join(msl_ios, f'b-{chain}'))): die(f'no iOS shader libraries {msl_ios}/b-{chain}')
++
++t(f'app: {name} {version} ({child["DM_BUNDLE_ID"]}), language {child["DM_LANG"]}' + (', frame-rate counter on' if child['DM_SHOW_FPS'] == 'YES' else ''))
++t('generate Gen/ (host sources, embedded modules, tables)')
++gen = os.path.join(IOS, 'Gen')
++shutil.rmtree(gen, ignore_errors=True); os.makedirs(os.path.join(gen, 'dm'))
++r = subprocess.run([PY, os.path.join(IOS, 'tools', 'gen_build_portable.py'), os.path.join(DM, 'host'), gen], capture_output=True, text=True, env=child)
++if r.returncode: die(f'gen_build_portable: {r.stderr.strip()[-800:]}')
++xc = r.stdout
++f = out(PY, os.path.join(IOS, 'tools', 'gen_embed.py'), patched, os.path.join(gen, 'embed.S'), *mods, what='gen_embed')
++with open(os.path.join(gen, 'dm.xcconfig'), 'w') as x:
++    x.write(xc.rstrip('\n') + '\n' + f'OTHER_LDFLAGS = $(inherited) $(DM_FRAMEWORKS) {f}\n')
++for pat in ('*.fixups.tsv', '*.gates.tsv', '*.cuts.tsv', '*.obs.tsv'):
++    for p in glob.glob(os.path.join(patched, pat)): shutil.copy(p, os.path.join(gen, 'dm'))
++tables = ['shader_map.tsv', 'pso_manifest.tsv'] + ([] if gfx in ('vulkan', 'gl') else ['c1_full.tsv'])
++for tb in tables: shutil.copy(os.path.join(gd, tb), os.path.join(gen, 'dm'))
++if gfx == 'nvn' and os.path.isfile(os.path.join(gd, 'cb_extent.tsv')): shutil.copy(os.path.join(gd, 'cb_extent.tsv'), os.path.join(gen, 'dm'))
++# the launcher's settings (Launcher.swift), when this nxnative has them
++settings_py = os.path.join(DM, 'games', 'settings.py')
++if os.path.isfile(settings_py):
++    launcher = out(PY, settings_py, game, patched, vnacp, os.path.join(gen, 'dm', 'launcher.json'), what='launcher settings (dm/games/settings.py)')
++    t(f'launcher: {launcher}')
++if env.get('DM_ENV_FILE'):
++    shutil.copy(env['DM_ENV_FILE'], os.path.join(gen, 'dm', 'env.txt'))
++    t('env: ' + ' '.join(l.strip() for l in open(env['DM_ENV_FILE']) if l.strip() and not l.startswith('#')))
++msldir = 'vk' if gfx == 'vulkan' else 'gl' if gfx == 'gl' else f'b-{chain}'
++
++# shared-font stand-ins: macOS's Arial Unicode and Arial Rounded Bold; elsewhere the system's sans fonts (STD_FONT / LETTER_FONT name others)
++windir = os.environ.get('WINDIR', r'C:\Windows')
++std_candidates = ['/usr/share/fonts/noto/NotoSans-Regular.ttf', '/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf', '/usr/share/fonts/TTF/DejaVuSans.ttf',
++                  '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf', os.path.join(windir, 'Fonts', 'arial.ttf'), '/System/Library/Fonts/Supplemental/Arial Unicode.ttf']
++letter_candidates = ['/usr/share/fonts/noto/NotoSans-Bold.ttf', '/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf', '/usr/share/fonts/TTF/DejaVuSans-Bold.ttf',
++                     '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf', os.path.join(windir, 'Fonts', 'arialbd.ttf')]
++std_font = env.get('STD_FONT') or next((c for c in std_candidates if os.path.isfile(c)), None) or die('no standard font found (STD_FONT=a TTF)')
++letter_font = env.get('LETTER_FONT') or next((c for c in letter_candidates if os.path.isfile(c)), None)
++os.makedirs(os.path.join(gen, 'dm', 'font'))
++shutil.copy(std_font, os.path.join(gen, 'dm', 'font', 'standard.ttf'))
++r = subprocess.run([env.get('FONT_PY') or PY, os.path.join(DM, 'tools', 'make_ext_font.py'), os.path.join(gen, 'dm', 'font', 'nintendo_ext.ttf')] + ([letter_font] if letter_font else []),
++                   capture_output=True, text=True)
++if r.returncode: die(f'make_ext_font.py: {r.stderr.strip()[-500:]}')
++
++icon = env.get('DM_ICON') or os.path.join(os.path.dirname(romfs), 'icon.jpg')
++if os.path.isfile(icon):
++    child['DM_ICON'] = icon
++    t(f'app icon: {icon}')
++else:
++    t(f'no app icon ({icon} not found): the home-screen icon stays blank')
++
++os.makedirs(o, exist_ok=True)
++t('xcodebuild stand-in: tools/build_app_linux.py (clang + ld64.lld, Release, unsigned, iPhone + iPad)')
++app = os.path.join(dd, 'Build', 'Products', 'Release-iphoneos', 'DmIOS.app')
++with open(os.path.join(o, 'build.log'), 'w') as log:
++    r = subprocess.run([env.get('FONT_PY') or PY, os.path.join(IOS, 'tools', 'build_app_linux.py'), IOS, app, os.path.join(dd, 'Build', 'Intermediates.noindex', 'obj')],
++                       stdout=log, stderr=subprocess.STDOUT, env=child)
++if r.returncode:
++    for line in open(os.path.join(o, 'build.log'), errors='replace'):
++        if 'error' in line or 'RED' in line: print(line.rstrip())
++    die(f'build_app_linux.py, log {o}/build.log')
++if not os.path.isdir(app): die('no built app')
++t(f'app: {app}')
++
++shutil.rmtree(os.path.join(app, 'msl'), ignore_errors=True)
++p = 'Payload/DmIOS.app'
++maps = [f'{p}={app}', f'{p}/msl/{msldir}={os.path.join(msl_ios, msldir)}']
++if aoc and os.path.isdir(aoc):
++    maps.append(f'{p}/aoc={aoc}')
++    t('add-on content: ' + ' '.join(sorted(os.listdir(aoc))))
++maps.append(f'{p}/romfs={romfs}')
++t('pack IPA (already-compressed game files stored, everything else deflated)')
++r = subprocess.run([PY, os.path.join(IOS, 'tools', 'pack_ipa.py'), out_ipa, '--store', gp('zip_store'), '--skip', f'{p}/_CodeSignature', '--skip', f'{p}/embedded.mobileprovision',
++                    '--skip', f'{p}/msl', '--skip', f'{p}/aoc', '--skip', f'{p}/romfs', *maps])
++if r.returncode: die('pack_ipa')
++t(f'done: {out_ipa} ({os.path.getsize(out_ipa) / 2**30:.1f} GB)')
+diff --git a/dm/ios/tools/gen_build_portable.py b/dm/ios/tools/gen_build_portable.py
+new file mode 100755
+index 0000000..bc2df3b
+--- /dev/null
++++ b/dm/ios/tools/gen_build_portable.py
+@@ -0,0 +1,136 @@
++#!/usr/bin/env python3
++# gen_build.py without make and without symlinks (Linux, Windows): the same Gen/src, Gen/main/main.c and xcconfig lines, from dm/host/Makefile's own
++# variables, evaluated here instead of by `make -n -B dmhost`. It understands what that Makefile uses: assignments (= and :=), $(VAR), $(sort …),
++# $(wildcard …), $(shell find DIR -name 'PAT'), $(dir …), and the recipe lines of dmhost (the host's compile line: -I, -D, -framework, sources) and of the
++# libvpx objects (their -I). The game profile header is written by game.py as the Makefile's game_profile target does. Files are linked into Gen/src
++# where symlinks work, else copied.
++# Usage: gen_build_portable.py <dm/host dir> <Gen dir>   (GAME from the environment, as for gen_build.py)
++import fnmatch, glob, os, re, shlex, shutil, subprocess, sys
++
++host, gen = os.path.abspath(sys.argv[1]), os.path.abspath(sys.argv[2])
++game = os.environ.get('GAME') or sys.exit('GAME is not set')
++games_py = os.path.normpath(os.path.join(host, '../games/game.py'))
++
++# the profile folder: dm/games/<id> unless DM_GAMES_FIRST asks for another one (DM_GAMES_DIR), as the Makefile's GAME_DIR
++in_repo = os.path.join(host, '../games', game)
++if os.path.isfile(os.path.join(in_repo, 'game.tsv')) and not os.environ.get('DM_GAMES_FIRST'):
++    game_dir = os.path.normpath(in_repo)
++else:
++    game_dir = subprocess.run([sys.executable, games_py, 'dir', game], capture_output=True, text=True, check=True).stdout.strip()
++game_h = os.path.join(host, 'gen', game, 'game_profile.h')
++os.makedirs(os.path.dirname(game_h), exist_ok=True)
++subprocess.run([sys.executable, games_py, 'header', game, game_h], check=True, cwd=host)   # the Makefile's game_profile target
++
++text = open(os.path.join(host, 'Makefile')).read().replace('\\\n', ' ')
++variables = {'GAME': game, 'GAME_DIR': game_dir, 'GAME_H': game_h}
++fixed = set(variables)
++for m in re.finditer(r'^([A-Z_][A-Z0-9_]*)\s*:?=\s*(.*?)\s*(?:#.*)?$', text, re.M):
++    if m.group(1) not in fixed:   # GAME, GAME_DIR, GAME_H are this script's (absolute paths)
++        variables[m.group(1)] = m.group(2)
++
++
++def split_args(s):   # function arguments: commas at nesting level 0
++    out, depth, cur = [], 0, ''
++    for c in s:
++        if c == '(':
++            depth += 1
++        elif c == ')':
++            depth -= 1
++        if c == ',' and depth == 0:
++            out.append(cur); cur = ''
++        else:
++            cur += c
++    return out + [cur]
++
++
++def expand(s, depth=0):
++    if depth > 20: return s
++    out, i = '', 0
++    while i < len(s):
++        if s.startswith('$(', i):
++            j, level = i + 2, 1
++            while j < len(s) and level:
++                level += {'(': 1, ')': -1}.get(s[j], 0); j += 1
++            inner = s[i + 2:j - 1]
++            name, _, rest = inner.partition(' ')
++            if name == 'sort':
++                out += ' '.join(sorted(set(expand(rest, depth + 1).split())))
++            elif name == 'wildcard':
++                found = []
++                for pat in expand(rest, depth + 1).split():
++                    found += sorted(os.path.relpath(p, host) if not os.path.isabs(pat) else p for p in glob.glob(os.path.join(host, pat)))
++                out += ' '.join(found)
++            elif name == 'dir':
++                out += ' '.join(os.path.dirname(w) + '/' for w in expand(rest, depth + 1).split())
++            elif name == 'shell':
++                cmd = shlex.split(expand(rest, depth + 1))
++                if cmd[:1] == ['find'] and '-name' in cmd:
++                    root, pat = cmd[1], cmd[cmd.index('-name') + 1]
++                    hits = []
++                    for d, _, fs in os.walk(os.path.join(host, root)):
++                        hits += [os.path.relpath(os.path.join(d, f), host) for f in fs if fnmatch.fnmatch(f, pat)]
++                    out += ' '.join(sorted(hits))
++            elif name in ('if', 'and', 'patsubst', 'filter-out', 'or', 'strip', 'error'):
++                out += ''   # not needed for the compile list
++            else:
++                out += expand(variables.get(inner, ''), depth + 1)
++            i = j
++        else:
++            out += s[i]; i += 1
++    return out
++
++
++def recipe(target_re):   # the compile line (tab-indented, running clang) of the rule whose target matches
++    lines = text.split('\n')
++    for k, l in enumerate(lines):
++        if re.match(target_re, l):
++            for r in lines[k + 1:]:
++                if not r.startswith('\t'): break
++                r = r.lstrip('\t').lstrip('@')
++                if r.startswith('clang'): return r
++    sys.exit(f'no clang recipe for {target_re} in {host}/Makefile')
++
++
++link = shlex.split(expand(recipe(r'^dmhost:\s')))
++vpx_compile = shlex.split(expand(recipe(r'^gen/vpx/%\.o:')))
++vpx_sources = expand('$(VPX_SRC)').split()
++
++# as gen_build.py: the host's own line first (its header paths first), then the libvpx compiles
++srcs, incs, defs, fws = [], [], [], []
++for toks, extra in ((link, []), (vpx_compile, vpx_sources)):
++    i = 0
++    while i < len(toks):
++        t = toks[i]
++        if t == '-framework': fws.append(toks[i + 1]); i += 2; continue
++        if t.startswith('-I'):
++            d = os.path.normpath(os.path.join(host, t[2:]))
++            if d not in incs: incs.append(d)
++        elif t.startswith('-D'): defs.append(t)
++        elif t.endswith(('.c', '.m', '.S')) and not t.startswith('$'): srcs.append(os.path.normpath(os.path.join(host, t)))
++        i += 1
++    srcs += [os.path.normpath(os.path.join(host, s)) for s in extra]
++assert srcs, 'no source files in the compile command'
++dup = sorted({s for s in srcs if srcs.count(s) > 1})
++if dup: sys.exit('duplicate source files in the compile command: ' + ' '.join(dup))
++
++
++def place(src, dst):   # a symlink where possible (follows edits), else a copy (Windows without the privilege)
++    try: os.symlink(src, dst)
++    except (OSError, NotImplementedError): shutil.copyfile(src, dst)
++
++
++os.makedirs(f'{gen}/src'); os.makedirs(f'{gen}/main')
++dirs = []
++ios_sources = os.path.normpath(os.path.join(host, '../ios/Sources'))
++for s in srcs:
++    d = os.path.dirname(s)
++    if d not in dirs: dirs.append(d)
++    b = os.path.basename(s)
++    if os.path.splitext(b)[0].endswith('_mac'): continue
++    if d == ios_sources: continue
++    if s == os.path.join(host, 'main.c'): place(s, f'{gen}/main/main.c'); continue
++    flat = os.path.relpath(s, os.path.dirname(host)).replace(os.sep, '__').replace('/', '__')
++    place(s, f'{gen}/src/{flat}')
++print('HEADER_SEARCH_PATHS = $(inherited) ' + ' '.join(f'"{d}"' for d in incs + dirs))
++print('OTHER_CFLAGS = $(inherited) ' + ' '.join(defs))
++print('DM_FRAMEWORKS = ' + ' '.join(f'-framework {f}' for f in fws if f != 'Cocoa'))
 diff --git a/dm/linux/README.md b/dm/linux/README.md
 new file mode 100644
-index 0000000..572f15c
+index 0000000..91bdab9
 --- /dev/null
 +++ b/dm/linux/README.md
-@@ -0,0 +1,26 @@
+@@ -0,0 +1,27 @@
 +# Packing outside macOS (Linux)
 +
 +`scripts/build_ipa_from_nsp.py` also runs on Linux. Everything up to the shader split is the same code as on the Mac; these stand in for Xcode:
@@ -258,6 +549,7 @@ index 0000000..572f15c
 +| Mac | Linux |
 +| --- | --- |
 +| `xcrun -sdk iphoneos metal` / `metallib` (the shader chain) | `dm/linux/bin/xcrun`: Apple's **Metal Developer Tools for Windows** under wine, with `-target air64-apple-ios<min>` for the SDK |
++| `build_ipa.sh` (bash) and `gen_build.py` (`make -n`) | `dm/ios/tools/build_ipa_portable.py` and `gen_build_portable.py`: the same steps in Python, the compile list evaluated from `dm/host/Makefile` itself (no bash, no make); Windows too |
 +| `xcodegen` + `xcodebuild` | `dm/ios/tools/build_app_linux.py`: clang + `ld64.lld` against an iPhoneOS SDK taken from `Xcode.xip`; the icon as PNG files named in Info.plist (no `actool`) |
 +| Xcode's Swift compiler (the app's `Launcher.swift`) | the Linux Swift toolchain's `swiftc` with Xcode's Swift resource folder (`DM_SWIFT_RESOURCES`: the toolchain's `usr/lib/swift`, its `iphoneos` part, `apinotes` and clang headers suffice) |
 +| `dm/gfx/tools/dmsh_xlate_bin/dmsh_xlate` (a macOS launcher) | the same `dmsh_xlate.dll` run with `dotnet` (the NSP script writes a launcher in `<id>_build/tools/dmsh_xlate`) |
@@ -278,7 +570,7 @@ index 0000000..572f15c
 +
 +Then: `python3 scripts/build_ipa_from_nsp.py <NSP folder> -k <prod.keys>`. The IPA is unsigned.
 diff --git a/scripts/build_ipa_from_nsp.py b/scripts/build_ipa_from_nsp.py
-index 637f529..e03fe14 100755
+index 637f529..06d7ae1 100755
 --- a/scripts/build_ipa_from_nsp.py
 +++ b/scripts/build_ipa_from_nsp.py
 @@ -343,6 +343,10 @@ def rmtree(p):
@@ -388,3 +680,14 @@ index 637f529..e03fe14 100755
      picks = pick_nsps(fam, have, versions)
  
      ex = work / 'extract'; ex.mkdir(parents=True, exist_ok=True); (work / 'tmp').mkdir(exist_ok=True)
+@@ -1535,7 +1561,9 @@ def main(args=None):
+         return
+     watch = IpaWatch(repo, work / 'ipa', out_ipa)
+     PROG.stage('app build', poll=watch.poll, step='starting')   # build_ipa.sh's "pack IPA" line starts the stage "IPA pack"
+-    run(['bash', repo / 'dm/ios/tools/build_ipa.sh', out_ipa], logs / 'build_ipa.log', env=ipa_env, on_line=watch.line)
++    # outside macOS the same steps in Python (no bash, make or Xcode: dm/ios/tools/build_ipa_portable.py)
++    builder = ['bash', repo / 'dm/ios/tools/build_ipa.sh'] if sys.platform == 'darwin' else [py, repo / 'dm/ios/tools/build_ipa_portable.py']
++    run([*builder, out_ipa], logs / 'build_ipa.log', env=ipa_env, on_line=watch.line)
+     if not out_ipa.is_file(): raise BuildError(f'no IPA at {out_ipa}')
+     PROG.end(f'{out_ipa.name}, {amount(out_ipa.stat().st_size, "B")}')
+     rmtree(work / 'tmp')

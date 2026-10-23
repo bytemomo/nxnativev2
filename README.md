@@ -2,8 +2,8 @@
 
 A desktop app that turns your own Nintendo Switch game files into an iPhone / iPad app and installs it: drop the game files and keys,
 build the IPA with the [nxnative](https://github.com/bytemomo/nxnative) pipeline, then sign it with an Apple ID and install it, or export
-it for [LiveContainer](https://github.com/LiveContainer/LiveContainer). One executable per platform carries everything the build needs.
-Linux first; built to run on Windows too.
+it for [LiveContainer](https://github.com/LiveContainer/LiveContainer). One executable per platform carries everything the build needs:
+Linux (`nxnativev2-linux-x64`) and Windows (`nxnativev2-windows-x64.exe`).
 
 ## What you provide
 
@@ -16,7 +16,9 @@ Linux first; built to run on Windows too.
 
 Everything else is inside the executable (unpacked once into the data folder on the first build): the pinned nxnative revision with this
 repository's patches applied, a portable Python with the pipeline's modules, the .NET runtime with nx_extract, the app's Swift launcher
-compiled ahead of time, spirv-cross, and clang + lld. On Linux the system provides wine (Apple's Metal compiler runs under it), make and bash.
+compiled ahead of time, spirv-cross, and clang + lld. On Linux the system provides wine (Apple's Metal compiler runs under it); Windows runs
+Apple's Metal compiler natively and needs nothing else for the build. Installing on a device needs Apple's device service: on Windows the
+Apple Devices app (Microsoft Store) or iTunes; on Linux usbmuxd.
 
 ## Using it
 
@@ -61,7 +63,8 @@ crates/nxcore   everything the app does, no UI
 crates/nxcli    the same steps on the command line: nxnative check | setup | sdk | metal | import | games | build | devices |
                 install | install-ipa | serve | export | forget
 crates/nxapp    the Slint desktop app
-crates/xtask    cargo xtask bundle: the packaged executable (dist/)
+crates/xtask    cargo xtask bundle [--target linux|windows]: the packaged executable (dist/), both built on Linux
+crates/launchers  xcrun.exe and dotnet-dll-launcher.exe: what the pipeline runs by name on Windows
 patches/nxnative  UPSTREAM (repository and revision); common/ for every platform, linux/ and windows/ per platform
 ```
 
@@ -85,11 +88,13 @@ again (in a checkout of the new revision: apply them, fix, and `git diff --binar
 
 ```
 cargo build --release            # development: target/release/nxnativev2 (app) and nxnative (CLI), no bundle: set nxnative_repo / python
-cargo xtask bundle               # the packaged app: dist/nxnativev2-linux-x64
+cargo xtask bundle                    # the packaged app: dist/nxnativev2-linux-x64
+cargo xtask bundle --target windows   # dist/nxnativev2-windows-x64.exe (cross-compiled: rustup target add x86_64-pc-windows-gnu, mingw-w64)
 ```
 
 `cargo xtask bundle` needs, on the build machine: the .NET SDK 10 (to publish nx_extract), Swift (swiftc) with the iOS SDK and Swift
-resources extracted by the app or `nxnative sdk` (from Xcode.xip; `--sdk-dir` to point elsewhere), git, cmake and ninja (spirv-cross).
+resources extracted by the app or `nxnative sdk` (from Xcode.xip; `--sdk-dir` to point elsewhere), git, cmake and ninja (spirv-cross); for
+Windows also the Rust target x86_64-pc-windows-gnu, mingw-w64 (gcc, g++) and pip (Windows wheels of the Python modules).
 Downloads (nxnative, Python, the .NET runtime, LLVM) are cached in `target/bundle-cache`.
 
 On Wayland, the app opens through XWayland when it is available, because winit receives dropped files only on X11 / Windows;

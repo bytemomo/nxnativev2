@@ -1,0 +1,16 @@
+[package]
+name = "launchers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Small executables the Windows bundle carries where the nxnative pipeline runs commands by name: xcrun (Apple's Metal compiler) and a dotnet dll launcher"
+
+[[bin]]
+name = "xcrun"
+path = "src/bin/xcrun.rs"
+
+[[bin]]
+name = "dotnet-dll-launcher"
+path = "src/bin/dotnet_dll_launcher.rs"
+
