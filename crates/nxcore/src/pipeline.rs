@@ -199,6 +199,9 @@ pub fn start(settings: &Settings, store: &Store, id: u64, opts: &Options, on_eve
         .env("TEMP", store.tmp_dir())
         .env("TMP", store.tmp_dir())
         .env("PYTHONUNBUFFERED", "1")
+        // the scripts print non-ASCII text (→, …); on Windows Python would write it to a pipe in the ANSI code page and fail (UnicodeEncodeError)
+        .env("PYTHONUTF8", "1")
+        .env("PYTHONIOENCODING", "utf-8")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());

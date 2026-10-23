@@ -259,10 +259,10 @@ fn llvm(ctx: &Ctx) -> Result<()> {
 
 /// Windows: the executables the pipeline runs by name (crates/launchers)
 fn launchers(ctx: &Ctx) -> Result<()> {
-    say("launchers (xcrun.exe, dotnet-dll-launcher.exe)");
+    say("launchers (xcrun.exe, which.exe, dotnet-dll-launcher.exe)");
     run(Command::new("cargo").args(["build", "--profile", "dist", "-p", "launchers", "--target", WIN_RUST_TARGET]).current_dir(&ctx.root))?;
     let from = ctx.root.join(format!("target/{WIN_RUST_TARGET}/dist"));
-    for exe in ["xcrun.exe", "dotnet-dll-launcher.exe"] {
+    for exe in ["xcrun.exe", "which.exe", "dotnet-dll-launcher.exe"] {
         fs::copy(from.join(exe), ctx.payload.join("bin").join(exe))?;
     }
     Ok(())

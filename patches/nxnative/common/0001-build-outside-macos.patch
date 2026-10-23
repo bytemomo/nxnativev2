@@ -1,3 +1,71 @@
+diff --git a/dm/games/profile_guess.py b/dm/games/profile_guess.py
+index 09e67e0..0a0c799 100644
+--- a/dm/games/profile_guess.py
++++ b/dm/games/profile_guess.py
+@@ -58,7 +58,7 @@ def romfs_files(romfs):   # (path, size, first 32 bytes) of every RomFS file: fr
+         for n in names:
+             p = Path(d) / n
+             with open(p, 'rb') as f: head = f.read(32)
+-            yield '/' + str(p.relative_to(romfs)), p.stat().st_size, head
++            yield '/' + p.relative_to(romfs).as_posix(), p.stat().st_size, head
+ 
+ 
+ def npdm(path):   # (system resource size, program ID) from main.npdm; a non-zero system resource means virtual address memory (Engage 16 MB); (0, None) without the file
+diff --git a/dm/gfx/tools/dmsh_mtlcache.py b/dm/gfx/tools/dmsh_mtlcache.py
+index 6ca4323..8ec9445 100644
+--- a/dm/gfx/tools/dmsh_mtlcache.py
++++ b/dm/gfx/tools/dmsh_mtlcache.py
+@@ -8,10 +8,11 @@
+ # of the same chain holds the iOS libraries of the same sources. A folder is taken only when its json chain_metal is the current convention and a fresh compile of
+ # a few of its shaders (two per stage) reproduces their libraries byte for byte; each folder is read once (filled.json remembers it by its number of libraries).
+ # Not part of the chain version (dmsh_chain.py): the cache never changes an output, it only skips recompiling one. Change FORMAT when what it stores changes.
+-import os, re, json, shutil, ctypes, hashlib, threading, subprocess, collections
++import os, re, sys, json, shutil, ctypes, hashlib, threading, subprocess, collections
+ 
+ FORMAT = b'dmsh_mtlcache 1'
+-_clonefile = getattr(ctypes.CDLL(None, use_errno=True), 'clonefile', None)   # APFS copy-on-write copy (no data written); elsewhere a plain copy
++# APFS copy-on-write copy (no data written); elsewhere a plain copy (Windows has no ctypes.CDLL(None) at all)
++_clonefile = getattr(ctypes.CDLL(None, use_errno=True), 'clonefile', None) if sys.platform == 'darwin' else None
+ 
+ 
+ def clone(src, dst):
+diff --git a/dm/gfx/tools/shader_split.py b/dm/gfx/tools/shader_split.py
+index 10caf6b..357e1ca 100644
+--- a/dm/gfx/tools/shader_split.py
++++ b/dm/gfx/tools/shader_split.py
+@@ -1048,7 +1048,9 @@ def main():
+     files, results, common = [], [], None
+     for i, (romfs, mainnso) in enumerate(zip(romfs_v, main_v)):
+         tag = os.path.basename(os.path.dirname(os.path.abspath(romfs))) if i else ''
+-        files += sorted((os.path.join(dp, f), (tag + '/' if tag else '') + os.path.relpath(os.path.join(dp, f), romfs)) for dp, _, fs in os.walk(romfs) for f in fs)
++        # source paths with / on every platform (Windows: os.sep is \), sorted as on a / filesystem: the profile's groups match /-prefixes and its package indices follow this order
++        files += sorted(((os.path.join(dp, f), (tag + '/' if tag else '') + os.path.relpath(os.path.join(dp, f), romfs).replace(os.sep, '/')) for dp, _, fs in os.walk(romfs) for f in fs),
++                        key=lambda e: e[0].replace(os.sep, '/'))
+         img = nso_image(mainnso)
+         if not i:
+             import unityfs
+diff --git a/dm/gfx/tools/uepak.py b/dm/gfx/tools/uepak.py
+index e908672..8f07be4 100644
+--- a/dm/gfx/tools/uepak.py
++++ b/dm/gfx/tools/uepak.py
+@@ -417,7 +417,7 @@ def job(romfs, main_nso, work, decode=None):
+         for i in t.of_type(IO_SHADER_LIBRARY):
+             name = io_library_name(t, i, names) + '.ushaderbytecode'; b = io_archive(t, i, decode)
+             open(os.path.join(work, 'archives', name), 'wb').write(b)
+-            listing.append(dict(name=name, pak=os.path.relpath(tp, romfs), path=f'chunk {t.ids[i].hex()}', shaders=len(archive(b)['shaders']), compressed=0, compression='IoStore, decoded'))
++            listing.append(dict(name=name, pak=os.path.relpath(tp, romfs).replace(os.sep, '/'), path=f'chunk {t.ids[i].hex()}', shaders=len(archive(b)['shaders']), compressed=0, compression='IoStore, decoded'))
+     for pak in unreal_paks(romfs, legacy=False):
+         with open(pak, 'rb') as f: enc = footer(f)[0]
+         if enc and key is None:
+@@ -433,7 +433,7 @@ def job(romfs, main_nso, work, decode=None):
+             open(os.path.join(work, 'archives', name), 'wb').write(b)
+             for i in comp:
+                 off, size, raw, _ = a['shaders'][i]; recs.append((name, i, b[a['code'] + off:a['code'] + off + size], raw))
+-            listing.append(dict(name=name, pak=os.path.relpath(pak, romfs), path=path, shaders=len(a['shaders']), compressed=len(comp), compression=how))
++            listing.append(dict(name=name, pak=os.path.relpath(pak, romfs).replace(os.sep, '/'), path=path, shaders=len(a['shaders']), compressed=len(comp), compression=how))
+     with open(os.path.join(work, 'oodle.job'), 'wb') as f:
+         f.write(struct.pack('<II', JOB_MAGIC, len(recs)))
+         for _, _, c, raw in recs: f.write(struct.pack('<II', len(c), raw)); f.write(c)
 diff --git a/dm/ios/tools/build_app_linux.py b/dm/ios/tools/build_app_linux.py
 new file mode 100755
 index 0000000..60722d6
