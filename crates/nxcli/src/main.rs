@@ -72,6 +72,18 @@ enum Cmd {
         #[arg(long)]
         device: Option<String>,
     },
+    /// Share a game with LiveContainer over Wi-Fi: a page for the device (certificate import + install links) until Ctrl+C
+    Serve {
+        game: String,
+        /// sign in to add the account's certificate to the page
+        #[arg(long)]
+        apple_id: Option<String>,
+        /// no certificate (no sign-in): only the IPA
+        #[arg(long)]
+        no_certificate: bool,
+        #[arg(long, default_value_t = nxcore::serve::DEFAULT_PORT)]
+        port: u16,
+    },
     /// Forget the Apple ID password saved in the system keyring
     Forget { apple_id: String },
 }
@@ -276,6 +288,30 @@ async fn main() -> Result<()> {
             let mut session = sign_in(&store, &mut settings, apple_id).await?;
             apple::install(&mut session, &udid, &ipa, false, Arc::new(|f| eprint!("\rinstalling {:.0}%   ", f * 100.0))).await?;
             eprintln!("\rinstalled            ");
+        }
+        Cmd::Serve { game, apple_id, no_certificate, port } => {
+            let id = parse_id(&game)?;
+            let ipa = store.ipa(id);
+            if !ipa.is_file() {
+                bail!("no IPA for {game} yet: build it first");
+            }
+            let g = games::game(&store, repo.as_deref(), id)?;
+            let certificate = if no_certificate {
+                None
+            } else {
+                let mut session = sign_in(&store, &mut settings, apple_id).await?;
+                Some(session.existing_certificate_p12(&store, "").await?.0)
+            };
+            let server = nxcore::serve::start(nxcore::serve::Share { name: g.name.clone(), ipa, certificate }, port)?;
+            println!("Open on the device (same Wi-Fi): {}", server.url);
+            println!("Serving until Ctrl+C.");
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                let sent = server.sent.load(std::sync::atomic::Ordering::Relaxed);
+                if sent > 0 {
+                    eprint!("\rIPA sent: {:.2} GB   ", sent as f64 / 1e9);
+                }
+            }
         }
         Cmd::Export { game, to, apple_id } => {
             let id = parse_id(&game)?;

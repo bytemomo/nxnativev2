@@ -29,11 +29,17 @@ compiled ahead of time, spirv-cross, and clang + lld. On Linux the system provid
 5. Then, from the game's page:
    - **Sign with your Apple ID and install** (the normal way). On the device: Settings → Privacy & Security → Developer Mode on,
      then Settings → General → VPN & Device Management → trust your Apple ID.
-   - **Export for LiveContainer**: the IPA and the account's signing certificate (`<Apple ID>.p12`, no password) are copied into your
-     Downloads folder. Move both to the device, import the certificate in LiveContainer (Settings → Import Certificate) and install the IPA
-     there; LiveContainer signs it. The certificate is exported read-only (the one belonging to this app's signing key, else iloader's:
-     nothing is created or revoked), and LiveContainer must itself be signed with the same Apple ID (**Install an IPA…** on the
-     iPhone / iPad page, or iloader).
+   - **Share with LiveContainer over Wi-Fi**: the app serves a page on this computer and shows its QR code (the address has a
+     random token: only someone with the link gets the files). On the device (same Wi-Fi) scan it or open it in Safari: one button
+     imports the account's signing certificate into LiveContainer (`livecontainer://certificate`, once per Apple ID), one makes
+     LiveContainer download the game from this computer and install it (`livecontainer://install?url=`); LiveContainer signs it.
+     The certificate is exported read-only (the one belonging to this app's signing key, else iloader's: nothing is created or
+     revoked), and LiveContainer must itself be signed with the same Apple ID (**Install an IPA…** on the iPhone / iPad page, or
+     iloader). **Save IPA + certificate to Downloads** copies both files instead. The firewall must let the device reach port 8642.
+
+The Apple ID password and the sign-in state are kept in the system keyring (Secret Service on Linux, Credential Manager on Windows).
+On Linux the keyring is encrypted with its own password: it asks for it once per login unless the login unlocks it (GNOME Keyring:
+give the "login" keyring your account password and make it the default; it then opens with your session).
 
 Sign-in: when no code pop-up appears, the code dialog can send an SMS to a specific trusted number ID (Apple does not always list the
 numbers; IDs start at 1, a changed number may be 2), or use a code from Settings → your name → Sign-In & Security → Get Verification Code.
@@ -49,9 +55,11 @@ crates/nxcore   everything the app does, no UI
                   nsp, games   game files, keys and the data folder
                   pipeline     runs the nxnative script (JSON progress)
                   apple        Apple ID sign-in (isideload), keyring credentials, devices, signing and installing, the read-only certificate export
+                  serve        the Wi-Fi share for LiveContainer: a page with the certificate and install links, the IPA, a QR code
                   export       IPA and certificate into the Downloads folder
+                  logging      the TLS crypto provider and the log file (<data>/logs/nxnativev2.log)
 crates/nxcli    the same steps on the command line: nxnative check | setup | sdk | metal | import | games | build | devices |
-                install | install-ipa | export | forget
+                install | install-ipa | serve | export | forget
 crates/nxapp    the Slint desktop app
 crates/xtask    cargo xtask bundle: the packaged executable (dist/)
 patches/nxnative  UPSTREAM (repository and revision); common/ for every platform, linux/ and windows/ per platform

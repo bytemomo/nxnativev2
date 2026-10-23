@@ -197,8 +197,17 @@ pub mod credentials {
         keyring::Entry::new(SERVICE, &format!("apple-id:{}", email.trim().to_lowercase())).ok()
     }
 
+    /// Whether a system keyring answers. Checked once per process, by reading an entry that does not exist: no write, so a locked
+    /// keyring is not asked to unlock just for the check (the Secret Service searches locked collections without a prompt)
     pub fn available() -> bool {
-        keyring::Entry::new(SERVICE, "test").is_ok_and(|e| e.set_password("test").is_ok() && e.get_password().is_ok() && e.delete_credential().is_ok())
+        static AVAILABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *AVAILABLE.get_or_init(|| match keyring::Entry::new(SERVICE, "availability-probe").and_then(|e| e.get_password()) {
+            Ok(_) | Err(keyring::Error::NoEntry) => true,
+            Err(e) => {
+                tracing::warn!("no system keyring ({e}): sign-in state is kept in the data folder");
+                false
+            }
+        })
     }
 
     pub fn save(email: &str, password: &str) -> anyhow::Result<()> {

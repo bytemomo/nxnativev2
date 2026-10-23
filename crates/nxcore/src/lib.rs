@@ -12,6 +12,7 @@ pub mod metal;
 pub mod nsp;
 pub mod patch;
 pub mod pipeline;
+pub mod serve;
 pub mod settings;
 pub mod store;
 pub mod xip;

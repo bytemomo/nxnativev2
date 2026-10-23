@@ -37,6 +37,9 @@ struct App {
     tfa: Mutex<Option<oneshot::Sender<apple::TwoFactorAnswer>>>,
     certs: Mutex<Option<oneshot::Sender<Vec<String>>>>,
     dropped: Mutex<Vec<PathBuf>>,
+    share: Mutex<Option<nxcore::serve::Server>>,
+    /// the Metal compiler's version line (running it takes seconds under wine): asked once, again after an install
+    metal_version: Mutex<Option<String>>,
 }
 
 /// Runs `f` with the window on the UI thread (from any thread)
@@ -110,7 +113,7 @@ impl App {
     }
 
     /// Fills the main area for the selected game (UI thread)
-    fn show_selected(&self, w: &AppWindow) {
+    fn show_selected(self: &Arc<Self>, w: &AppWindow) {
         let Some(g) = self.selected_game(w) else {
             if w.get_selected() == -1 {
                 self.show_tools(w);
@@ -160,27 +163,39 @@ impl App {
         w.set_build_log(view.log.into());
     }
 
-    fn show_tools(&self, w: &AppWindow) {
-        let settings = self.settings.lock().unwrap().clone();
-        let reqs: Vec<Line> = pipeline::check(&settings, &self.store)
-            .into_iter()
-            .map(|r| Line { title: r.name.into(), detail: r.detail.into(), ok: r.ok })
-            .collect();
-        w.set_requirements(model(reqs));
-        w.set_sdk_state(match self.store.sdk() {
-            Some(s) => format!("Installed: {}", s.file_name().unwrap_or_default().to_string_lossy()).into(),
-            None => "Not installed. Download Xcode (the .xip, e.g. \"Xcode 26.6 Apple silicon.xip\") and choose it here: only the iPhone SDK is taken from it (about 200 MB).".into(),
-        });
-        w.set_metal_state(if metal::installed(&self.store) {
-            let v = metal::version(&self.store).unwrap_or_else(|e| e.to_string());
-            format!("Installed: {v}").into()
-        } else if cfg!(windows) {
-            "Not installed. Download \"Metal Developer Tools for Windows\" and choose its installer here.".into()
-        } else {
-            "Not installed. Download \"Metal Developer Tools for Windows\" and choose its installer here: it is installed into a wine prefix of this app.".into()
-        });
-        w.set_repo_path(pipeline::repo(&settings, &self.store).map(|p| p.display().to_string()).unwrap_or_default().into());
+    /// Fills the Apple tools page. The checks run commands (the Metal compiler under wine takes seconds): they run on a worker thread,
+    /// and the page is filled when they are done
+    fn show_tools(self: &Arc<Self>, w: &AppWindow) {
         w.set_data_path(self.store.root().display().to_string().into());
+        let app = self.clone();
+        std::thread::spawn(move || {
+            let settings = app.settings.lock().unwrap().clone();
+            let reqs: Vec<(String, String, bool)> = pipeline::check(&settings, &app.store).into_iter().map(|r| (r.name.to_string(), r.detail, r.ok)).collect();
+            let sdk = match app.store.sdk() {
+                Some(s) => format!("Installed: {}", s.file_name().unwrap_or_default().to_string_lossy()),
+                None => "Not installed. Download Xcode (the .xip, e.g. \"Xcode 26.6 Apple silicon.xip\") and choose it here: only the iPhone SDK and Swift resources are taken from it (about 280 MB).".into(),
+            };
+            let metal = if metal::installed(&app.store) {
+                let cached = app.metal_version.lock().unwrap().clone();
+                let v = cached.unwrap_or_else(|| {
+                    let v = metal::version(&app.store).unwrap_or_else(|e| e.to_string());
+                    *app.metal_version.lock().unwrap() = Some(v.clone());
+                    v
+                });
+                format!("Installed: {v}")
+            } else if cfg!(windows) {
+                "Not installed. Download \"Metal Developer Tools for Windows\" and choose its installer here.".into()
+            } else {
+                "Not installed. Download \"Metal Developer Tools for Windows\" and choose its installer here: it is installed into a wine prefix of this app.".into()
+            };
+            let repo = pipeline::repo(&settings, &app.store).map(|p| p.display().to_string()).unwrap_or_default();
+            on_ui(&app.ui, move |w| {
+                w.set_requirements(model(reqs.into_iter().map(|(t, d, ok)| Line { title: t.into(), detail: d.into(), ok }).collect()));
+                w.set_sdk_state(sdk.into());
+                w.set_metal_state(metal.into());
+                w.set_repo_path(repo.into());
+            });
+        });
     }
 
     fn update_build(self: &Arc<Self>, id: u64, f: impl FnOnce(&mut BuildView)) {
@@ -477,7 +492,7 @@ impl App {
 
     fn install(self: &Arc<Self>, id: u64, device: usize, memory_limit: bool, into_lc: bool) {
         if into_lc {
-            return self.export(id);
+            return self.share(id);
         }
         let app = self.clone();
         let Some(udid) = self.devices.lock().unwrap().get(device).map(|d| d.udid.clone()) else {
@@ -522,6 +537,82 @@ impl App {
 }
 
 impl App {
+    /// Shares the game with LiveContainer over Wi-Fi: the account certificate (when signed in) and the IPA on a page of this computer
+    fn share(self: &Arc<Self>, id: u64) {
+        let ipa = self.store.ipa(id);
+        let name = self.games.lock().unwrap().iter().find(|g| g.id == id).map(|g| g.name.clone()).unwrap_or_else(|| format!("{id:016X}"));
+        let app = self.clone();
+        on_ui(&self.ui, |w| {
+            w.set_installing(true);
+            w.set_install_label("Starting the share page…".into());
+            w.set_install_fraction(0.0);
+        });
+        self.rt.spawn(async move {
+            let certificate = {
+                let mut guard = app.session.lock().await;
+                match guard.as_mut() {
+                    Some(s) => match s.existing_certificate_p12(&app.store, "").await {
+                        Ok((p12, _)) => Some(p12),
+                        Err(e) => {
+                            tracing::warn!("share: no certificate: {e:#}");
+                            app.status(format!("No certificate on the page: {e:#}"));
+                            None
+                        }
+                    },
+                    None => None,
+                }
+            };
+            let result = nxcore::serve::start(nxcore::serve::Share { name, ipa, certificate }, nxcore::serve::DEFAULT_PORT);
+            match result {
+                Ok(server) => {
+                    let url = server.url.clone();
+                    let sent = server.sent.clone();
+                    *app.share.lock().unwrap() = Some(server);
+                    let qr = nxcore::serve::qr_rgba(&url, 6);
+                    on_ui(&app.ui, move |w| {
+                        w.set_installing(false);
+                        w.set_install_label("".into());
+                        if let Some((size, px)) = qr {
+                            let buf = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(&px, size, size);
+                            w.set_share_qr(slint::Image::from_rgba8(buf));
+                        }
+                        w.set_share_url(url.into());
+                        w.set_share_sent("".into());
+                        w.set_sharing(true);
+                    });
+                    // the bytes sent, while the share runs
+                    loop {
+                        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                        if app.share.lock().unwrap().is_none() {
+                            break;
+                        }
+                        let n = sent.load(std::sync::atomic::Ordering::Relaxed);
+                        if n > 0 {
+                            let text = format!("Sent so far: {:.2} GB.", n as f64 / 1e9);
+                            on_ui(&app.ui, move |w| w.set_share_sent(text.into()));
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("share failed: {e:#}");
+                    let label = format!("Cannot share: {e:#}");
+                    on_ui(&app.ui, move |w| {
+                        w.set_installing(false);
+                        w.set_install_label(label.into());
+                    });
+                }
+            }
+        });
+    }
+
+    fn stop_share(&self) {
+        *self.share.lock().unwrap() = None;
+        on_ui(&self.ui, |w| {
+            w.set_sharing(false);
+            w.set_share_url("".into());
+        });
+    }
+
     /// Copies the game's IPA and the account's signing certificate (read-only export) into the Downloads folder, for LiveContainer
     fn export(self: &Arc<Self>, id: u64) {
         let ipa = self.store.ipa(id);
@@ -628,6 +719,8 @@ fn main() -> Result<()> {
         tfa: Mutex::new(None),
         certs: Mutex::new(None),
         dropped: Mutex::new(vec![]),
+        share: Mutex::new(None),
+        metal_version: Mutex::new(None),
     });
     if let Some(id) = &settings.apple_id {
         ui.set_apple_id(id.clone().into());
@@ -735,7 +828,10 @@ fn main() -> Result<()> {
                     w.set_tool_fraction(0.0);
                 });
                 let label = match metal::install(&app.store, &f[0]) {
-                    Ok(v) => format!("Installed: {v}"),
+                    Ok(v) => {
+                        *app.metal_version.lock().unwrap() = Some(v.clone());
+                        format!("Installed: {v}")
+                    }
                     Err(e) => format!("Failed: {e:#}"),
                 };
                 let app2 = app.clone();
@@ -787,6 +883,14 @@ fn main() -> Result<()> {
             apple::credentials::forget(&w.get_apple_id());
             w.set_has_saved_password(false);
             a.status("Saved password forgotten");
+        }
+    });
+    let a = app.clone();
+    ui.on_stop_share(move || a.stop_share());
+    let a = app.clone();
+    ui.on_save_downloads(move || {
+        if let Some(g) = a.ui.upgrade().and_then(|u| a.selected_game(&u)) {
+            a.export(g.id);
         }
     });
     let a = app.clone();

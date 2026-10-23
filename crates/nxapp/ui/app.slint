@@ -129,8 +129,12 @@ export component AppWindow inherits Window {
     in-out property <bool> memory-limit: true;
     in-out property <bool> remember-password: true;
     in property <bool> has-saved-password;
-    in-out property <int> install-target;   // 0 = signed with the Apple ID and installed, 1 = exported for LiveContainer (IPA + certificate to Downloads)
+    in-out property <int> install-target;   // 0 = signed with the Apple ID and installed, 1 = shared with LiveContainer over Wi-Fi
     in property <string> downloads-path;
+    in property <bool> sharing;
+    in property <string> share-url;
+    in property <image> share-qr;
+    in property <string> share-sent;
     in property <bool> device-busy;
     in property <string> device-label;
     in property <float> device-fraction;
@@ -164,6 +168,8 @@ export component AppWindow inherits Window {
     callback install();
     callback forget-password();
     callback install-other-ipa();
+    callback stop-share();
+    callback save-downloads();
     callback tfa-submit();
     callback tfa-sms(int);
     callback tfa-devices();
@@ -568,7 +574,7 @@ export component AppWindow inherits Window {
                             spacing: 8px;
                             ComboBox {
                                 horizontal-stretch: 1;
-                                model: ["Sign with your Apple ID and install", "Export for LiveContainer (IPA + certificate to Downloads)"];
+                                model: ["Sign with your Apple ID and install", "Share with LiveContainer over Wi-Fi"];
                                 current-index <=> root.install-target;
                             }
                             if root.install-target == 0: ComboBox {
@@ -579,25 +585,66 @@ export component AppWindow inherits Window {
                             }
                         }
                         if root.signed-in-as == "": Text {
-                            text: "Sign in with your Apple ID on the iPhone / iPad page first" + (root.install-target == 1 ? " (the certificate comes from the account)." : ".");
+                            text: root.install-target == 0 ? "Sign in with your Apple ID on the iPhone / iPad page first." : "Not signed in: the page offers only the game, not the certificate (sign in on the iPhone / iPad page to add it).";
                             color: #f0883e;
                         }
                         if root.install-target == 0: CheckBox {
                             text: "Ask for the Increased Memory Limit (bigger games need it; if Apple refuses, the app is installed without)";
                             checked <=> root.memory-limit;
                         }
-                        if root.install-target == 1: Text {
-                            text: "The IPA and this account's signing certificate (.p12, no password) go to " + root.downloads-path + ". Move both to the device; in LiveContainer import the certificate once (Settings → Import Certificate), then install the IPA there: LiveContainer signs it. LiveContainer itself must be signed with the same Apple ID.";
+                        if root.install-target == 1 && !root.sharing: Text {
+                            text: "Starts a page on this computer for the device (same Wi-Fi): one button imports this account's certificate into LiveContainer (once), one makes LiveContainer download the game from here and install it. LiveContainer itself must be signed with the same Apple ID.";
                             wrap: word-wrap;
                             color: Palette.foreground.transparentize(0.3);
+                        }
+                        if root.install-target == 1 && root.sharing: HorizontalLayout {
+                            spacing: 14px;
+                            Image {
+                                source: root.share-qr;
+                                width: 180px;
+                                height: 180px;
+                                image-rendering: pixelated;
+                            }
+                            VerticalLayout {
+                                alignment: start;
+                                spacing: 8px;
+                                Text {
+                                    text: "On the iPad: scan this with the camera, or open in Safari:";
+                                    wrap: word-wrap;
+                                }
+                                TextInput {
+                                    text: root.share-url;
+                                    read-only: true;
+                                    font-weight: 600;
+                                    wrap: word-wrap;
+                                }
+                                Text {
+                                    text: "Then tap 1 (certificate, once) and 2 (install). Keep this app open while LiveContainer downloads. " + root.share-sent;
+                                    wrap: word-wrap;
+                                    color: Palette.foreground.transparentize(0.3);
+                                }
+                                HorizontalLayout {
+                                    alignment: start;
+                                    Button {
+                                        text: "Stop sharing";
+                                        clicked => { root.stop-share(); }
+                                    }
+                                }
+                            }
                         }
                         HorizontalLayout {
                             alignment: start;
                             Button {
-                                text: root.install-target == 0 ? "Install" : "Export";
+                                text: root.install-target == 0 ? "Install" : "Share";
                                 primary: true;
-                                enabled: !root.installing && !root.building && !root.device-busy && root.ipa-info != "" && root.signed-in-as != "" && (root.install-target == 1 || root.device-labels.length > 0);
+                                visible: root.install-target == 0 || !root.sharing;
+                                enabled: !root.installing && !root.building && !root.device-busy && root.ipa-info != "" && (root.install-target == 1 || (root.signed-in-as != "" && root.device-labels.length > 0));
                                 clicked => { root.install(); }
+                            }
+                            if root.install-target == 1: Button {
+                                text: "Save IPA + certificate to Downloads instead";
+                                enabled: !root.installing && root.ipa-info != "" && root.signed-in-as != "";
+                                clicked => { root.save-downloads(); }
                             }
                         }
                         if root.installing || root.install-label != "": Progress {
