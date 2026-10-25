@@ -1,0 +1,5 @@
+# The nxnative revision nxnativev2 builds with: downloaded from GitHub as a tarball, then the patches of this folder are applied in name order.
+# To move to a newer revision: change rev, check that every patch still applies (cargo test -p nxcore), and rebuild. The revision must be one whose
+# game profiles hold the current shader chain version (dmsh_chain.h): eab15b5 (codex/geometry merge) changed dmsh_build.py without regenerating them.
+repo	https://github.com/bytemomo/nxnative
+rev	1159ccc675629e8d19b055c2130a55cfee0709ab

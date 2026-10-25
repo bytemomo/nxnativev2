@@ -1,0 +1,580 @@
+// Design mockup of the new UI (sample data only): rendered to PNG by `cargo run -p nxapp --example mockup`
+
+export global Theme {
+    out property <color> bg: #0e1014;
+    out property <color> sidebar: #13161b;
+    out property <color> surface: #171b21;
+    out property <color> raised: #20252d;
+    out property <color> line: #262c35;
+    out property <color> text: #eceef1;
+    out property <color> muted: #8a919c;
+    out property <color> faint: #5c636e;
+    out property <color> accent: #7c6cff;
+    out property <color> accent2: #4ea8ff;
+    out property <color> ok: #3ad38b;
+    out property <color> warn: #f2b34b;
+    out property <color> bad: #ff6464;
+    out property <brush> accent-fill: @linear-gradient(120deg, #8b6cff 0%, #4ea8ff 100%);
+    out property <brush> lc-fill: @linear-gradient(135deg, #1fd1a5 0%, #2b7cff 100%);
+    // every button: one size
+    out property <length> button-width: 112px;
+    out property <length> button-height: 34px;
+}
+
+export struct GameRow {
+    name: string,
+    icon: image,
+    state: int,      // 0 ready to install, 1 building, 2 needs keys, 3 on the device
+    detail: string,
+    fraction: float,
+}
+
+component Dot inherits Rectangle {
+    in property <color> c;
+    width: 8px; height: 8px; border-radius: 4px; background: c;
+}
+
+// LiveContainer's mark: a box holding a box
+component LcMark inherits Rectangle {
+    in property <length> size: 40px;
+    width: size; height: size; border-radius: size * 0.26; background: Theme.lc-fill;
+    Rectangle {
+        width: parent.width * 0.56; height: parent.height * 0.56; border-radius: parent.width * 0.13;
+        border-width: max(2px, parent.width * 0.06); border-color: #ffffffe0;
+        Rectangle { width: parent.width * 0.42; height: parent.height * 0.42; border-radius: parent.width * 0.1; background: #ffffffe0; }
+    }
+}
+
+// the one button: a capsule, primary (filled) or not
+component Button inherits Rectangle {
+    in property <string> label;
+    in property <bool> primary;
+    width: Theme.button-width;
+    height: Theme.button-height;
+    border-radius: self.height / 2;
+    background: primary ? Theme.accent-fill : Theme.raised;
+    border-width: primary ? 0px : 1px;
+    border-color: Theme.line;
+    drop-shadow-color: primary ? #6a5cff50 : transparent;
+    drop-shadow-blur: primary ? 18px : 0px;
+    drop-shadow-offset-y: primary ? 4px : 0px;
+    Text { text: label; color: primary ? white : Theme.text; font-size: 13px; font-weight: primary ? 650 : 500; }
+}
+
+component Chip inherits Rectangle {
+    in property <string> label;
+    in property <int> kind: 0;   // 0 done, 1 warning, 2 empty slot, 3 working
+    height: 28px;
+    border-radius: 14px;
+    background: kind == 2 ? transparent : kind == 1 ? Theme.warn.with-alpha(0.12) : kind == 3 ? Theme.accent.with-alpha(0.16) : Theme.raised;
+    border-width: kind == 2 ? 1px : 0px;
+    border-color: Theme.line;
+    HorizontalLayout {
+        padding-left: 11px; padding-right: 13px; spacing: 7px;
+        alignment: center;
+        if kind != 2: Text { text: kind == 0 ? "✓" : kind == 1 ? "!" : "●"; color: kind == 0 ? Theme.ok : kind == 1 ? Theme.warn : Theme.accent; font-size: kind == 3 ? 8px : 12.5px; font-weight: 700; vertical-alignment: center; }
+        Text { text: label; color: kind == 2 ? Theme.muted : kind == 1 ? Theme.warn : Theme.text; font-size: 12.5px; vertical-alignment: center; }
+    }
+}
+
+component Toggle inherits Rectangle {
+    in property <bool> on;
+    width: 42px; height: 24px; border-radius: 12px; background: on ? Theme.accent : Theme.raised;
+    Rectangle { x: on ? parent.width - self.width - 3px : 3px; width: 18px; height: 18px; border-radius: 9px; background: white; }
+}
+
+component Bar inherits Rectangle {
+    in property <float> fraction;
+    height: 6px; border-radius: 3px; background: Theme.line;
+    Rectangle { x: 0; width: parent.width * fraction; height: parent.height; border-radius: 3px; background: Theme.accent-fill; }
+}
+
+// a log, shown inside the card of the activity it belongs to
+component LogView inherits Rectangle {
+    in property <[string]> lines;
+    border-radius: 10px; background: #00000040;
+    VerticalLayout {
+        padding-left: 12px; padding-right: 12px; padding-top: 9px; padding-bottom: 9px; spacing: 2px;
+        for l in lines: Text { text: l; color: l.character-count > 0 && l == lines[lines.length - 1] ? Theme.text : Theme.muted; font-family: "Noto Sans Mono"; font-size: 10.5px; overflow: elide; }
+    }
+}
+
+component LogToggle inherits HorizontalLayout {
+    in property <bool> open;
+    spacing: 6px; alignment: start;
+    Text { text: open ? "▾" : "▸"; color: Theme.muted; font-size: 11px; vertical-alignment: center; }
+    Text { text: "Log"; color: Theme.muted; font-size: 12.5px; vertical-alignment: center; }
+}
+
+component GameItem inherits Rectangle {
+    in property <GameRow> game;
+    in property <bool> selected;
+    in property <bool> lc;
+    height: 58px;
+    border-radius: 12px;
+    background: selected ? Theme.raised : transparent;
+    HorizontalLayout {
+        padding: 9px; spacing: 11px;
+        if lc: LcMark { size: 40px; }
+        if !lc: Rectangle {
+            width: 40px; height: 40px; border-radius: 10px; clip: true;
+            background: Theme.raised;
+            Image { source: game.icon; width: parent.width; height: parent.height; image-fit: cover; }
+            if game.icon.width == 0: Text { text: "C"; color: Theme.muted; font-size: 16px; font-weight: 700; }
+        }
+        VerticalLayout {
+            alignment: center; spacing: 4px;
+            Text { text: game.name; color: Theme.text; font-size: 13.5px; font-weight: selected ? 600 : 500; overflow: elide; }
+            HorizontalLayout {
+                spacing: 6px; alignment: start;
+                Dot { c: game.state == 0 ? Theme.accent2 : game.state == 1 ? Theme.accent : game.state == 2 ? Theme.warn : Theme.ok; y: (parent.height - self.height) / 2; }
+                Text { text: game.detail; color: Theme.muted; font-size: 11.5px; overflow: elide; }
+            }
+            if game.state == 1: Bar { height: 3px; fraction: game.fraction; }
+        }
+    }
+}
+
+component DeviceChip inherits Rectangle {
+    in property <string> name;
+    in property <string> detail;
+    in property <bool> connected;
+    in property <bool> selected;
+    height: 50px; border-radius: 12px; background: selected ? Theme.raised : Theme.surface;
+    border-width: 1px; border-color: Theme.line;
+    HorizontalLayout {
+        padding-left: 12px; padding-right: 12px; spacing: 11px;
+        Rectangle {
+            width: 26px; height: 32px; border-radius: 6px; y: (parent.height - self.height) / 2;
+            border-width: 2px; border-color: Theme.muted;
+            Rectangle { width: 4px; height: 4px; border-radius: 2px; background: Theme.muted; y: parent.height - 7px; }
+        }
+        VerticalLayout {
+            alignment: center; spacing: 2px;
+            Text { text: name; color: Theme.text; font-size: 13px; font-weight: 600; }
+            Text { text: detail; color: Theme.muted; font-size: 11.5px; }
+        }
+        Dot { c: connected ? Theme.ok : Theme.faint; y: (parent.height - self.height) / 2; }
+    }
+}
+
+component Avatar inherits Rectangle {
+    in property <length> size: 30px;
+    in property <string> initials;
+    width: size; height: size; border-radius: size / 2;
+    background: @linear-gradient(135deg, #ff9a62 0%, #ff5d8f 100%);
+    Text { text: initials; color: white; font-size: size * 0.4; font-weight: 700; }
+}
+
+component Card inherits Rectangle {
+    border-radius: 16px; background: #ffffff08;
+}
+
+// a page section: a heading and a card of rows
+component Section inherits VerticalLayout {
+    in property <string> heading;
+    spacing: 10px;
+    alignment: start;
+    Text { text: heading; color: Theme.faint; font-size: 12px; font-weight: 600; letter-spacing: 0.6px; }
+    Card { VerticalLayout { padding-left: 18px; padding-right: 18px; padding-top: 2px; padding-bottom: 2px; @children } }
+}
+
+// a row in a section: a mark, a name, a value, a state and an optional button
+component Row inherits Rectangle {
+    in property <string> name;
+    in property <string> value;
+    in property <int> state: 0;   // 0 fine, 1 warning, 2 missing, 3 nothing to show
+    in property <string> action;
+    in property <bool> last;
+    height: 58px;
+    HorizontalLayout {
+        spacing: 14px;
+        Rectangle {
+            width: 30px; height: 30px; border-radius: 15px; y: (parent.height - self.height) / 2;
+            background: state == 0 ? Theme.ok.with-alpha(0.14) : state == 1 ? Theme.warn.with-alpha(0.14) : state == 2 ? Theme.bad.with-alpha(0.14) : Theme.raised;
+            Text { text: state == 0 ? "✓" : state == 1 ? "!" : state == 2 ? "✕" : "·"; color: state == 0 ? Theme.ok : state == 1 ? Theme.warn : state == 2 ? Theme.bad : Theme.muted; font-size: 13px; font-weight: 700; }
+        }
+        VerticalLayout {
+            alignment: center; spacing: 3px;
+            Text { text: name; color: Theme.text; font-size: 14px; font-weight: 600; }
+            Text { text: value; color: state == 1 ? Theme.warn : Theme.muted; font-size: 12.5px; overflow: elide; }
+        }
+        if action != "": Button { label: action; y: (parent.height - self.height) / 2; }
+    }
+    if !last: Rectangle { y: parent.height - 1px; height: 1px; background: Theme.line; }
+}
+
+component Segmented inherits Rectangle {
+    in property <[string]> items;
+    in property <int> current;
+    height: 34px; border-radius: 17px; background: Theme.raised;
+    HorizontalLayout {
+        padding: 3px; spacing: 2px;
+        for it[i] in items: Rectangle {
+            border-radius: 14px; background: i == current ? Theme.surface : transparent;
+            HorizontalLayout {
+                padding-left: 14px; padding-right: 14px;
+                Text { text: it; color: i == current ? Theme.text : Theme.muted; font-size: 13px; font-weight: i == current ? 600 : 400; vertical-alignment: center; }
+            }
+        }
+    }
+}
+
+component SettingRow inherits Rectangle {
+    in property <string> name;
+    in property <bool> last;
+    height: 60px;
+    HorizontalLayout {
+        Text { text: name; color: Theme.text; font-size: 14px; vertical-alignment: center; }
+        Rectangle { }
+        HorizontalLayout { alignment: end; @children }
+    }
+    if !last: Rectangle { y: parent.height - 1px; height: 1px; background: Theme.line; }
+}
+
+component PageTitle inherits Text {
+    color: Theme.text; font-size: 30px; font-weight: 700;
+}
+
+// where a game can live on the device: its own app, or inside LiveContainer
+component Destination inherits Card {
+    in property <bool> lc;
+    in property <image> icon;
+    in property <string> title;
+    in property <string> state;
+    in property <int> state-kind;          // as Chip
+    in property <string> line;
+    in property <float> fraction: -1;      // ≥ 0: working
+    in property <[string]> log;
+    in property <bool> log-open;
+    width: 316px;
+    VerticalLayout {
+        padding: 18px; spacing: 12px; alignment: start;
+        HorizontalLayout {
+            spacing: 12px;
+            if lc: LcMark { size: 34px; }
+            if !lc: Rectangle {
+                width: 34px; height: 34px; border-radius: 9px; clip: true;
+                Image { source: icon; width: parent.width; height: parent.height; image-fit: cover; }
+            }
+            VerticalLayout {
+                alignment: center; spacing: 2px;
+                Text { text: title; color: Theme.text; font-size: 14px; font-weight: 650; }
+                Text { text: line; color: Theme.muted; font-size: 12px; overflow: elide; }
+            }
+            Rectangle { }
+            Chip { label: state; kind: state-kind; y: (parent.height - self.height) / 2; }
+        }
+        if fraction >= 0: Bar { fraction: fraction; }
+        Rectangle { height: 1px; background: Theme.line; }
+        @children
+    }
+}
+
+component MemoryRow inherits HorizontalLayout {
+    in property <string> value;
+    in property <bool> more;
+    spacing: 10px;
+    VerticalLayout {
+        alignment: center; spacing: 2px;
+        Text { text: "Memory"; color: Theme.text; font-size: 13.5px; font-weight: 600; }
+        Text { text: value; color: more ? Theme.muted : Theme.warn; font-size: 12px; }
+    }
+    Rectangle { }
+    @children
+}
+
+export component Mockup inherits Window {
+    in property <[GameRow]> games;
+    in property <int> selected;          // a game
+    in property <image> hero;
+    in property <int> page;              // 0 game ready, 1 game building, 2 LiveContainer, 3 iPad & Apple ID, 4 settings
+    in property <string> game-title;
+    in property <string> facts;
+    in property <[image]> lc-icons;
+    width: 1240px;
+    height: 800px;
+    background: Theme.bg;
+    default-font-family: "Noto Sans";
+
+    HorizontalLayout {
+        // ---- sidebar ----
+        Rectangle {
+            width: 280px;
+            background: Theme.sidebar;
+            VerticalLayout {
+                padding: 16px; spacing: 6px;
+                HorizontalLayout {
+                    padding-bottom: 14px; padding-left: 4px; spacing: 10px;
+                    Rectangle {
+                        width: 30px; height: 30px; border-radius: 9px; background: Theme.accent-fill;
+                        Text { text: "nx"; color: white; font-size: 14px; font-weight: 800; }
+                    }
+                    Text { text: "nxnative"; color: Theme.text; font-size: 17px; font-weight: 700; vertical-alignment: center; }
+                }
+                Text { text: "Library"; color: Theme.faint; font-size: 11.5px; font-weight: 600; letter-spacing: 0.6px; }
+                GameItem { lc: true; selected: page == 2; game: { name: "LiveContainer", state: 3, detail: "3.8.0 · 1 game inside" }; }
+                for g[i] in games: GameItem { game: g; selected: page < 2 && i == selected; }
+                Rectangle {
+                    height: 46px; border-radius: 12px; border-width: 1.5px; border-color: Theme.line;
+                    HorizontalLayout {
+                        alignment: center; spacing: 8px;
+                        Text { text: "+"; color: Theme.muted; font-size: 18px; vertical-alignment: center; }
+                        Text { text: "Add games"; color: Theme.muted; font-size: 13px; vertical-alignment: center; }
+                    }
+                }
+                Rectangle { }   // stretch
+                DeviceChip { name: "iPad Pro"; detail: "USB · iPadOS 27.0.1"; connected: true; selected: page == 3; }
+                Rectangle {
+                    height: 50px; border-radius: 12px;
+                    HorizontalLayout {
+                        padding-left: 10px; padding-right: 8px; spacing: 11px;
+                        Avatar { initials: "B9"; y: (parent.height - self.height) / 2; }
+                        VerticalLayout {
+                            alignment: center; spacing: 2px;
+                            Text { text: "Apple ID"; color: Theme.text; font-size: 13px; font-weight: 600; }
+                            Text { text: "you…@example.com"; color: Theme.muted; font-size: 11.5px; }
+                        }
+                        Rectangle { }
+                        Rectangle {
+                            width: 34px; height: 34px; border-radius: 10px; y: (parent.height - self.height) / 2;
+                            background: page == 4 ? Theme.accent.with-alpha(0.25) : transparent;
+                            Text { text: "⚙"; color: page == 4 ? Theme.text : Theme.muted; font-size: 18px; }
+                        }
+                    }
+                }
+            }
+            Rectangle { x: parent.width - 1px; width: 1px; background: Theme.line; }
+        }
+
+        // ---- page ----
+        Rectangle {
+            clip: true;
+
+            // ---- a game ----
+            if page <= 1: Rectangle {
+                Image { source: hero; x: parent.width - 620px; y: -160px; width: 760px; height: 760px; image-fit: cover; opacity: 0.2; }
+                Rectangle { background: @linear-gradient(90deg, Theme.bg 35%, #0e101400 100%); }
+                Rectangle { background: @linear-gradient(180deg, #0e101400 25%, Theme.bg 62%); }
+                VerticalLayout {
+                    padding-left: 64px; padding-right: 64px; padding-top: 64px; padding-bottom: 40px; spacing: 0px;
+                    HorizontalLayout {
+                        spacing: 28px; alignment: start;
+                        Rectangle {
+                            width: 120px; height: 120px; border-radius: 24px; clip: true;
+                            drop-shadow-color: #00000090; drop-shadow-blur: 30px; drop-shadow-offset-y: 10px;
+                            Image { source: hero; width: parent.width; height: parent.height; image-fit: cover; }
+                        }
+                        VerticalLayout {
+                            alignment: center; spacing: 10px;
+                            Text { text: game-title; color: Theme.text; font-size: 28px; font-weight: 700; }
+                            Text { text: facts; color: Theme.muted; font-size: 14px; }
+                            HorizontalLayout {
+                                spacing: 8px; alignment: start; padding-top: 6px;
+                                Chip { label: "Base game"; }
+                                Chip { label: page == 1 ? "Update 13.0.1" : "Update 1.0.30000"; }
+                                Chip { label: "Keys"; }
+                                Chip { label: "+ DLC"; kind: 2; }
+                            }
+                        }
+                    }
+                    Rectangle { height: 56px; }
+
+                    // ready: the two places the game can live, each with its own state, memory and log
+                    if page == 0: HorizontalLayout {
+                        spacing: 20px; alignment: start; vertical-stretch: 0;
+                        Destination {
+                            icon: hero; title: "Standalone app"; line: "On the Home Screen";
+                            state: "Installed"; state-kind: 0;
+                            MemoryRow { value: "More RAM"; more: true; Toggle { on: true; y: (parent.height - self.height) / 2; } }
+                            HorizontalLayout { spacing: 10px; alignment: start; Button { label: "Reinstall"; } Button { label: "Remove"; } }
+                            Text { text: "Signed with you…@example.com · valid 6 more days"; color: Theme.faint; font-size: 11.5px; }
+                        }
+                        Destination {
+                            lc: true; title: "In LiveContainer"; line: "Copying over USB";
+                            state: "46%"; state-kind: 3; fraction: 0.46;
+                            Text { text: "3.2 of 6.9 GB  ·  35 MB/s  ·  2 min left"; color: Theme.muted; font-size: 12.5px; }
+                            MemoryRow { value: "LiveContainer's: standard"; more: false; Button { label: "More RAM"; } }
+                            HorizontalLayout { spacing: 10px; alignment: start; Button { label: "Cancel"; } Rectangle { } LogToggle { open: false; } }
+                        }
+                    }
+
+                    // building: the build's card holds its own log
+                    if page == 1: Card {
+                        width: 520px; vertical-stretch: 0;
+                        VerticalLayout {
+                            padding: 20px; spacing: 12px; alignment: start;
+                            HorizontalLayout {
+                                Text { text: "Building"; color: Theme.text; font-size: 14px; font-weight: 650; }
+                                Rectangle { }
+                                Text { text: "Shaders 20,256 / 29,824  ·  19 min left"; color: Theme.muted; font-size: 13px; }
+                            }
+                            Bar { fraction: 0.68; }
+                            HorizontalLayout {
+                                spacing: 18px; alignment: start;
+                                for s[i] in ["Extract", "Rewrite", "Split", "Shaders", "App", "Pack"]: HorizontalLayout {
+                                    spacing: 5px;
+                                    Text { text: i < 3 ? "✓" : i == 3 ? "●" : "○"; color: i < 3 ? Theme.ok : i == 3 ? Theme.accent : Theme.faint; font-size: 11px; vertical-alignment: center; }
+                                    Text { text: s; color: i <= 3 ? Theme.muted : Theme.faint; font-size: 12px; vertical-alignment: center; }
+                                }
+                            }
+                            LogView {
+                                lines: [
+                                    "[16:13:12] iOS shaders: 29,824 to build (cache: 9,319)",
+                                    "  compiled 11,402  ·  reused 8,854  ·  variants 1,240",
+                                    "  shader 20,256: course/c_mushroom_0412 ok",
+                                ];
+                            }
+                            HorizontalLayout { spacing: 10px; alignment: start; Button { label: "Cancel"; } Rectangle { } LogToggle { open: true; } }
+                        }
+                    }
+                    Rectangle { }
+                }
+            }
+
+            // ---- LiveContainer ----
+            if page == 2: Rectangle {
+                Rectangle { x: parent.width - 520px; y: -220px; width: 760px; height: 760px; border-radius: 380px; background: @radial-gradient(circle, #1fd1a540 0%, #2b7cff10 45%, #0e101400 70%); }
+                VerticalLayout {
+                    padding-left: 64px; padding-right: 64px; padding-top: 64px; padding-bottom: 40px; spacing: 0px;
+                    HorizontalLayout {
+                        spacing: 28px; alignment: start;
+                        LcMark { size: 120px; drop-shadow-color: #00000090; drop-shadow-blur: 30px; drop-shadow-offset-y: 10px; }
+                        VerticalLayout {
+                            alignment: center; spacing: 10px;
+                            Text { text: "LiveContainer"; color: Theme.text; font-size: 28px; font-weight: 700; }
+                            Text { text: "Version 3.8.0  ·  standalone on iPad Pro  ·  signed with you…@example.com"; color: Theme.muted; font-size: 14px; }
+                            HorizontalLayout {
+                                spacing: 8px; alignment: start; padding-top: 6px;
+                                Chip { label: "Installed"; }
+                                Chip { label: "Certificate"; }
+                                Chip { label: "Standard memory"; kind: 1; }
+                            }
+                        }
+                    }
+                    Rectangle { height: 56px; }
+                    HorizontalLayout {
+                        spacing: 20px; alignment: start;
+                        Card {
+                            width: 316px;
+                            VerticalLayout {
+                                padding: 20px; spacing: 14px;
+                                MemoryRow { value: "Standard: every game inside shares it"; more: false; Toggle { on: false; y: (parent.height - self.height) / 2; } }
+                                Rectangle { height: 1px; background: Theme.line; }
+                                HorizontalLayout { spacing: 10px; alignment: start; Button { label: "Reinstall"; } Button { label: "Certificate"; } }
+                            }
+                        }
+                    }
+                    Rectangle { height: 30px; }
+                    Text { text: "Games inside"; color: Theme.faint; font-size: 12px; font-weight: 600; letter-spacing: 0.6px; }
+                    Rectangle { height: 10px; }
+                    Card {
+                        width: 560px;
+                        VerticalLayout {
+                            padding-left: 16px; padding-right: 16px;
+                            for g[i] in [{ n: "Hollow Knight: Silksong", s: "6.9 GB  ·  copied today 14:58" }, { n: "Mario Kart 8 Deluxe", s: "Not copied yet" }]: Rectangle {
+                                height: 62px;
+                                HorizontalLayout {
+                                    spacing: 14px;
+                                    Rectangle {
+                                        width: 38px; height: 38px; border-radius: 10px; clip: true; y: (parent.height - self.height) / 2;
+                                        Image { source: lc-icons[i]; width: parent.width; height: parent.height; image-fit: cover; opacity: i == 0 ? 1 : 0.45; }
+                                    }
+                                    VerticalLayout {
+                                        alignment: center; spacing: 3px;
+                                        Text { text: g.n; color: i == 0 ? Theme.text : Theme.muted; font-size: 14px; font-weight: 600; }
+                                        Text { text: g.s; color: Theme.muted; font-size: 12px; }
+                                    }
+                                    Rectangle { }
+                                    Button { label: i == 0 ? "Update" : "Copy"; y: (parent.height - self.height) / 2; }
+                                }
+                                if i == 0: Rectangle { y: parent.height - 1px; height: 1px; background: Theme.line; }
+                            }
+                        }
+                    }
+                    Rectangle { }
+                }
+            }
+
+            // ---- iPad & Apple ID ----
+            if page == 3: VerticalLayout {
+                padding-left: 64px; padding-right: 64px; padding-top: 64px; padding-bottom: 40px; spacing: 28px;
+                HorizontalLayout {
+                    spacing: 22px; alignment: start;
+                    Rectangle {
+                        width: 74px; height: 96px; border-radius: 14px; border-width: 4px; border-color: Theme.muted; y: 4px;
+                        Rectangle { width: parent.width - 16px; height: parent.height - 16px; border-radius: 8px; background: @linear-gradient(160deg, #2b7cff55 0%, #8b6cff33 100%); }
+                    }
+                    VerticalLayout {
+                        alignment: center; spacing: 8px;
+                        PageTitle { text: "iPad Pro"; }
+                        Text { text: "iPad Pro 11-inch (M5)  ·  iPadOS 27.0.1"; color: Theme.muted; font-size: 14px; }
+                        HorizontalLayout { spacing: 8px; alignment: start; padding-top: 4px; Chip { label: "Connected"; } Chip { label: "Trusted"; } Chip { label: "Developer Mode"; } }
+                    }
+                }
+                HorizontalLayout {
+                    spacing: 32px; alignment: start;
+                    Section {
+                        width: 360px;
+                        heading: "Device";
+                        Row { name: "Cable"; value: "USB 2 · 480 Mbit/s · about 35 MB/s"; state: 1; }
+                        Row { name: "Standalone apps"; value: "Hollow Knight: Silksong, LiveContainer"; state: 0; }
+                        Row { name: "Free space"; value: "182 GB of 256 GB"; state: 0; last: true; }
+                    }
+                    Section {
+                        width: 360px;
+                        heading: "Apple ID";
+                        Rectangle {
+                            height: 72px;
+                            HorizontalLayout {
+                                spacing: 14px;
+                                Avatar { size: 42px; initials: "B9"; y: (parent.height - self.height) / 2; }
+                                VerticalLayout {
+                                    alignment: center; spacing: 3px;
+                                    Text { text: "you@example.com"; color: Theme.text; font-size: 14px; font-weight: 600; overflow: elide; }
+                                    Text { text: "Team ABCDE12345  ·  free account"; color: Theme.muted; font-size: 12.5px; }
+                                }
+                            }
+                            Rectangle { y: parent.height - 1px; height: 1px; background: Theme.line; }
+                        }
+                        Row { name: "Certificate"; value: "Valid 6 more days"; state: 0; }
+                        Row { name: "Password"; value: "In the system keyring"; state: 0; action: "Sign out"; last: true; }
+                    }
+                }
+                Rectangle { }
+            }
+
+            // ---- settings ----
+            if page == 4: VerticalLayout {
+                padding-left: 64px; padding-right: 64px; padding-top: 64px; padding-bottom: 40px; spacing: 28px;
+                PageTitle { text: "Settings"; }
+                HorizontalLayout {
+                    spacing: 32px; alignment: start;
+                    VerticalLayout {
+                        spacing: 32px; alignment: start;
+                        Section {
+                            width: 360px;
+                            heading: "Apple tools";
+                            Row { name: "iOS SDK"; value: "iPhoneOS 26.5  ·  Xcode 26.6"; state: 0; action: "Replace"; }
+                            Row { name: "Metal compiler"; value: "32023.850  ·  tuned for wine"; state: 0; action: "Replace"; last: true; }
+                        }
+                        Section {
+                            width: 360px;
+                            heading: "Storage";
+                            Row { name: "Data folder"; value: "~/.local/share/nxnativev2  ·  58 GB"; state: 3; action: "Open"; }
+                            Row { name: "Logs"; value: "nxnativev2.log"; state: 3; action: "Open"; last: true; }
+                        }
+                    }
+                    Section {
+                        width: 360px;
+                        heading: "New builds";
+                        SettingRow { name: "Game language"; Segmented { items: ["English", "Italiano", "日本語"]; current: 0; y: 13px; } }
+                        SettingRow { name: "Frame-rate counter"; Toggle { on: true; y: 18px; } }
+                        SettingRow { name: "Install to"; last: true; Segmented { items: ["LiveContainer", "Standalone"]; current: 0; y: 13px; } }
+                    }
+                }
+                Rectangle { }
+            }
+        }
+    }
+}

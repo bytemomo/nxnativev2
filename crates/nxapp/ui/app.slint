@@ -1,0 +1,1105 @@
+// nxnativev2's window. Pages: a game (0), LiveContainer (1), the device and Apple ID (2), settings (3).
+
+import { ScrollView } from "std-widgets.slint";
+
+export global Theme {
+    out property <color> bg: #0e1014;
+    out property <color> sidebar: #12151a;
+    out property <color> surface: #171b21;
+    out property <color> card: #ffffff07;
+    out property <color> card-line: #ffffff0d;
+    out property <color> raised: #20252d;
+    out property <color> hover: #282e37;
+    out property <color> line: #252b33;
+    out property <color> text: #eceef1;
+    out property <color> muted: #8a919c;
+    out property <color> faint: #5c636e;
+    out property <color> accent: #7c6cff;
+    out property <color> accent2: #4ea8ff;
+    out property <color> ok: #3ad38b;
+    out property <color> warn: #f2b34b;
+    out property <color> bad: #ff6464;
+    out property <brush> accent-fill: @linear-gradient(120deg, #8b6cff 0%, #4ea8ff 100%);
+    out property <brush> lc-fill: @linear-gradient(135deg, #1fd1a5 0%, #2b7cff 100%);
+    out property <brush> avatar-fill: @linear-gradient(135deg, #ff9a62 0%, #ff5d8f 100%);
+    out property <length> button-width: 108px;
+    out property <length> button-height: 32px;
+    out property <length> page-pad: 48px;
+    out property <length> column: 720px;
+}
+
+export struct GameItem {
+    id: string,
+    name: string,
+    icon: image,
+    has-icon: bool,
+    state: int,       // 0 ready, 1 working, 2 needs something, 3 on the device
+    detail: string,
+    fraction: float,
+}
+
+export struct ChipData {
+    label: string,
+    kind: int,        // 0 done, 1 warning, 2 empty slot (adds files), 3 working
+}
+
+export struct Choice {
+    key: string,
+    label: string,
+}
+
+export struct LcGame {
+    name: string,
+    icon: image,
+    has-icon: bool,
+    detail: string,
+    action: string,   // "" none
+    newer: bool,      // a newer build than the copy
+    game: int,        // its index in the library, -1 when it is not there
+}
+
+export struct AppIdRow {
+    name: string,
+    identifier: string,
+    more: bool,
+}
+
+// one release's changes (nxcore::update::Changes): "v0.… · date" and the commit subjects
+export struct ReleaseChanges {
+    title: string,
+    notes: [string],
+}
+
+component Dot inherits Rectangle {
+    in property <color> c;
+    width: 7px; height: 7px; border-radius: 3.5px; background: c;
+}
+
+// LiveContainer's mark: a box holding a box
+component LcMark inherits Rectangle {
+    in property <length> size: 40px;
+    width: size; height: size; border-radius: size * 0.26; background: Theme.lc-fill;
+    Rectangle {
+        width: parent.width * 0.56; height: parent.height * 0.56; border-radius: parent.width * 0.13;
+        border-width: max(2px, parent.width * 0.06); border-color: #ffffffe0;
+        Rectangle { width: parent.width * 0.42; height: parent.height * 0.42; border-radius: parent.width * 0.1; background: #ffffffe0; }
+    }
+}
+
+// a game's art, or a plain tile while it has none
+component Art inherits Rectangle {
+    in property <image> icon;
+    in property <bool> has-icon;
+    in property <length> size: 40px;
+    width: size; height: size; border-radius: size * 0.24; clip: true; background: Theme.raised;
+    if has-icon: Image { source: icon; width: parent.width; height: parent.height; image-fit: cover; }
+    if !has-icon: Text { text: "◆"; color: Theme.faint; font-size: size * 0.36; }
+}
+
+// the one button: a capsule, primary (filled) or not
+component Button inherits Rectangle {
+    in property <string> label;
+    in property <bool> primary;
+    in property <bool> enabled: true;
+    callback clicked();
+    width: Theme.button-width;
+    height: Theme.button-height;
+    border-radius: self.height / 2;
+    background: primary ? Theme.accent-fill : (ta.has-hover && enabled ? Theme.hover : Theme.raised);
+    opacity: enabled ? (ta.pressed ? 0.8 : 1) : 0.4;
+    drop-shadow-color: primary && enabled ? #6a5cff40 : transparent;
+    drop-shadow-blur: primary ? 14px : 0px;
+    drop-shadow-offset-y: primary ? 3px : 0px;
+    Text { text: label; color: primary ? white : Theme.text; font-size: 12.5px; font-weight: primary ? 650 : 500; }
+    ta := TouchArea { enabled: root.enabled; mouse-cursor: pointer; clicked => { root.clicked(); } }
+}
+
+component Chip inherits Rectangle {
+    in property <string> label;
+    in property <int> kind: 0;
+    callback clicked();
+    height: 26px;
+    border-radius: 13px;
+    background: kind == 2 ? (ta.has-hover ? Theme.raised : transparent) : kind == 1 ? Theme.warn.with-alpha(0.12) : kind == 3 ? Theme.accent.with-alpha(0.16) : #ffffff0c;
+    border-width: kind == 2 ? 1px : 0px;
+    border-color: Theme.line;
+    HorizontalLayout {
+        padding-left: 10px; padding-right: 12px; spacing: 6px;
+        alignment: center;
+        if kind != 2: Text { text: kind == 0 ? "✓" : kind == 1 ? "!" : "●"; color: kind == 0 ? Theme.ok : kind == 1 ? Theme.warn : Theme.accent; font-size: kind == 3 ? 7px : 11.5px; font-weight: 700; vertical-alignment: center; }
+        Text { text: label; color: kind == 2 ? Theme.muted : kind == 1 ? Theme.warn : Theme.text; font-size: 12px; vertical-alignment: center; }
+    }
+    ta := TouchArea { enabled: kind == 2; mouse-cursor: kind == 2 ? pointer : default; clicked => { root.clicked(); } }
+}
+
+component Toggle inherits Rectangle {
+    in-out property <bool> on;
+    in property <bool> enabled: true;
+    callback toggled(bool);
+    width: 38px; height: 22px; border-radius: 11px; background: on ? Theme.accent : Theme.raised;
+    opacity: enabled ? 1 : 0.4;
+    animate background { duration: 140ms; }
+    Rectangle {
+        x: on ? parent.width - self.width - 3px : 3px; width: 16px; height: 16px; border-radius: 8px; background: white;
+        animate x { duration: 140ms; easing: ease-out; }
+    }
+    TouchArea { enabled: root.enabled; mouse-cursor: pointer; clicked => { root.on = !root.on; root.toggled(root.on); } }
+}
+
+// a small check box with its label
+component Check inherits Rectangle {
+    in-out property <bool> checked;
+    in property <string> label;
+    in property <bool> enabled: true;
+    callback toggled(bool);
+    height: Theme.button-height;
+    width: check-row.preferred-width;
+    opacity: enabled ? 1 : 0.4;
+    check-row := HorizontalLayout {
+        spacing: 8px;
+        Rectangle {
+            width: 15px; height: 15px; y: (parent.height - self.height) / 2; border-radius: 4.5px;
+            background: root.checked ? Theme.accent : transparent;
+            border-width: root.checked ? 0px : 1.5px; border-color: ta.has-hover ? Theme.muted : Theme.faint;
+            if root.checked: Text { text: "✓"; color: white; font-size: 10.5px; font-weight: 800; }
+        }
+        Text { text: root.label; color: ta.has-hover ? Theme.text : Theme.muted; font-size: 12.5px; vertical-alignment: center; }
+    }
+    ta := TouchArea { enabled: root.enabled; mouse-cursor: pointer; clicked => { root.checked = !root.checked; root.toggled(root.checked); } }
+}
+
+component Bar inherits Rectangle {
+    in property <float> fraction;
+    in property <bool> indeterminate;
+    height: 4px; border-radius: 2px; background: Theme.line; clip: true;
+    if !indeterminate: Rectangle { x: 0; width: parent.width * clamp(fraction, 0, 1); height: parent.height; border-radius: 2px; background: Theme.accent-fill; }
+    if indeterminate: Rectangle {
+        width: parent.width * 0.3; height: parent.height; border-radius: 2px; background: Theme.accent-fill;
+        x: (parent.width * 1.3) * mod(animation-tick() / 1400ms, 1) - parent.width * 0.3;
+    }
+}
+
+component Heading inherits Text {
+    color: Theme.faint; font-size: 11.5px; font-weight: 600; letter-spacing: 0.4px;
+}
+
+// an activity's log, under the card it belongs to and as wide as the page: scrollable, selectable (to copy), following new lines
+component LogPanel inherits VerticalLayout {
+    in property <string> title;
+    in property <string> text;
+    spacing: 8px;
+    Heading { text: title; }
+    Rectangle {
+        height: 260px; border-radius: 12px; background: #00000059; border-width: 1px; border-color: Theme.card-line;
+        sv := ScrollView {
+            x: 12px; y: 8px; width: parent.width - 24px; height: parent.height - 16px;
+            changed content-height => { self.content-y = min(0px, self.visible-height - self.content-height); }
+            VerticalLayout {
+                TextInput {
+                    text: root.text; read-only: true; single-line: false; wrap: word-wrap;
+                    color: #b9bfc8; selection-background-color: Theme.accent.with-alpha(0.5);
+                    font-family: "Noto Sans Mono"; font-size: 11px;
+                }
+            }
+        }
+    }
+}
+
+component LogToggle inherits Rectangle {
+    in-out property <bool> open;
+    height: 24px;
+    HorizontalLayout {
+        spacing: 5px;
+        Text { text: "Log"; color: ta.has-hover || open ? Theme.text : Theme.muted; font-size: 12.5px; vertical-alignment: center; }
+        Text { text: open ? "▴" : "▾"; color: Theme.faint; font-size: 10px; vertical-alignment: center; }
+    }
+    ta := TouchArea { mouse-cursor: pointer; clicked => { root.open = !root.open; } }
+}
+
+
+
+
+component Field inherits Rectangle {
+    in property <string> placeholder;
+    in property <bool> password;
+    in-out property <string> text;
+    callback accepted();
+    height: 38px; border-radius: 10px; background: #00000030;
+    border-width: 1px; border-color: input.has-focus ? Theme.accent : Theme.line;
+    HorizontalLayout {
+        padding-left: 12px; padding-right: 12px;
+        Rectangle {
+            input := TextInput {
+                width: parent.width; height: parent.height; vertical-alignment: center;
+                text <=> root.text; color: Theme.text; font-size: 13.5px; input-type: password ? InputType.password : InputType.text;
+                accepted => { root.accepted(); }
+            }
+            if root.text == "": Text { x: 0; text: placeholder; color: Theme.faint; font-size: 13.5px; vertical-alignment: center; height: parent.height; }
+        }
+    }
+}
+
+component PageTitle inherits Text {
+    color: Theme.text; font-size: 26px; font-weight: 700;
+}
+
+
+
+component Line inherits Rectangle {
+    height: 1px; background: Theme.line;
+}
+
+// a group of rows under a heading, each row closed by a hairline
+component Group inherits VerticalLayout {
+    in property <string> heading;
+    alignment: start;
+    if heading != "": Heading { text: heading; }
+    if heading != "": Rectangle { height: 10px; }
+    Line { }
+    @children
+}
+
+// a row of a group: a name, its value, then its controls (the children) and an optional button, right-aligned
+component Row inherits VerticalLayout {
+    in property <string> name;
+    in property <string> value;
+    in property <int> state: 3;   // 0 fine, 1 warning, 2 missing, 3 plain
+    in property <string> action;
+    in property <bool> action-enabled: true;
+    in property <bool> primary;
+    callback clicked();
+    HorizontalLayout {
+        height: 52px; spacing: 12px;
+        if state < 3: Dot { c: state == 0 ? Theme.ok : state == 1 ? Theme.warn : Theme.bad; y: (parent.height - self.height) / 2; }
+        Text { text: name; color: Theme.text; font-size: 13.5px; vertical-alignment: center; }
+        Text {
+            text: value; color: state == 1 ? Theme.warn : state == 2 ? Theme.bad : Theme.muted; font-size: 12.5px;
+            vertical-alignment: center; horizontal-alignment: right; overflow: elide; horizontal-stretch: 1; min-width: 0;
+        }
+        @children
+        if action != "": Button { label: action; primary: primary; enabled: action-enabled; y: (parent.height - self.height) / 2; clicked => { root.clicked(); } }
+    }
+    Line { }
+}
+
+// the header of a page: art (the children), title, one line of facts, chips
+component Hero inherits HorizontalLayout {
+    in property <string> title;
+    in property <string> facts;
+    in property <[ChipData]> chips;
+    callback chip-clicked();
+    spacing: 24px; alignment: start;
+    @children
+    VerticalLayout {
+        alignment: center; spacing: 8px;
+        Text { text: title; color: Theme.text; font-size: 26px; font-weight: 700; overflow: elide; }
+        if facts != "": Text { text: facts; color: Theme.muted; font-size: 13px; overflow: elide; }
+        if chips.length > 0: HorizontalLayout {
+            spacing: 6px; alignment: start; padding-top: 4px;
+            for c in chips: Chip { label: c.label; kind: c.kind; clicked => { root.chip-clicked(); } }
+        }
+    }
+}
+
+// a row for something that is done to a game: its mark, a title, its state (and log), its controls (the children) at the right, progress under
+component Place inherits VerticalLayout {
+    in property <int> mark;       // 0 the game's art, 1 LiveContainer, 2 the build
+    in property <image> icon;
+    in property <bool> has-icon;
+    in property <string> title;
+    in property <color> title-color: Theme.text;
+    in property <string> status;
+    in property <int> status-kind: 2;   // 0 done, 1 warning, 2 plain, 3 working
+    in property <bool> working;
+    in property <float> fraction;
+    in property <bool> indeterminate: fraction <= 0;
+    in property <string> progress;
+    in property <bool> has-log;
+    in-out property <bool> log-open;
+    VerticalLayout {
+        padding-top: 14px; padding-bottom: 14px; spacing: 12px;
+        HorizontalLayout {
+            spacing: 14px;
+            if mark == 0: Art { icon: icon; has-icon: has-icon; size: 38px; y: (parent.height - self.height) / 2; }
+            if mark == 1: LcMark { size: 38px; y: (parent.height - self.height) / 2; }
+            if mark == 2: Rectangle {
+                width: 38px; height: 38px; border-radius: 10px; background: Theme.raised; y: (parent.height - self.height) / 2;
+                Text { text: "⚙"; color: working ? Theme.accent : Theme.muted; font-size: 18px; }
+            }
+            VerticalLayout {
+                alignment: center; spacing: 2px; horizontal-stretch: 1; min-width: 0;
+                Text { text: title; color: title-color; font-size: 14px; font-weight: 600; overflow: elide; }
+                HorizontalLayout {
+                    spacing: 7px; alignment: start; height: 18px;
+                    if status != "" && status-kind != 2: Dot { c: status-kind == 0 ? Theme.ok : status-kind == 1 ? Theme.warn : Theme.accent; y: (parent.height - self.height) / 2; }
+                    if status != "": Text { text: status; color: status-kind == 1 ? Theme.warn : Theme.muted; font-size: 12.5px; vertical-alignment: center; overflow: elide; }
+                    if has-log: LogToggle { height: 18px; open <=> root.log-open; }
+                }
+            }
+            VerticalLayout {
+                alignment: center;
+                HorizontalLayout { spacing: 8px; @children }
+            }
+        }
+        if working: VerticalLayout {
+            padding-left: 52px; spacing: 8px;
+            Bar { fraction: fraction; indeterminate: indeterminate; }
+            if progress != "": Text { text: progress; color: Theme.muted; font-size: 12px; overflow: elide; }
+        }
+    }
+    Line { }
+}
+
+component SideItem inherits Rectangle {
+    in property <GameItem> game;
+    in property <bool> selected;
+    in property <bool> lc;
+    callback clicked();
+    height: 54px;
+    border-radius: 11px;
+    background: selected ? Theme.raised : ta.has-hover ? #ffffff07 : transparent;
+    HorizontalLayout {
+        padding: 8px; spacing: 11px;
+        if lc: LcMark { size: 38px; }
+        if !lc: Art { icon: game.icon; has-icon: game.has-icon; size: 38px; }
+        VerticalLayout {
+            alignment: center; spacing: 3px;
+            Text { text: game.name; color: Theme.text; font-size: 13px; font-weight: selected ? 600 : 500; overflow: elide; }
+            if game.detail != "": HorizontalLayout {
+                spacing: 6px; alignment: start;
+                Dot { c: game.state == 0 ? Theme.accent2 : game.state == 1 ? Theme.accent : game.state == 2 ? Theme.warn : Theme.ok; y: (parent.height - self.height) / 2; }
+                Text { text: game.detail; color: Theme.muted; font-size: 11.5px; overflow: elide; }
+            }
+            if game.state == 1: Bar { height: 3px; fraction: game.fraction; indeterminate: game.fraction <= 0; }
+        }
+    }
+    ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+}
+
+component Dialog inherits Rectangle {
+    in property <string> title;
+    background: #000000a0;
+    TouchArea { }   // keeps clicks from the page below
+    Rectangle {
+        width: 420px; height: inner.preferred-height;
+        border-radius: 18px; background: Theme.surface; border-width: 1px; border-color: Theme.line;
+        drop-shadow-color: #000000c0; drop-shadow-blur: 40px;
+        inner := VerticalLayout {
+            padding: 24px; spacing: 14px;
+            Text { text: title; color: Theme.text; font-size: 17px; font-weight: 700; }
+            @children
+        }
+    }
+}
+
+component Link inherits Text {
+    in property <bool> danger;
+    callback clicked();
+    color: ta.has-hover ? (danger ? Theme.bad : Theme.text) : Theme.muted; font-size: 12.5px; vertical-alignment: center;
+    ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+}
+
+component Qr inherits HorizontalLayout {
+    in property <image> qr;
+    in property <string> url;
+    spacing: 14px;
+    Rectangle {
+        width: 112px; height: 112px; border-radius: 10px; background: white; clip: true;
+        Image { source: qr; width: parent.width; height: parent.height; image-rendering: pixelated; }
+    }
+    VerticalLayout {
+        alignment: center;
+        TextInput { text: url; read-only: true; color: Theme.muted; font-size: 11px; wrap: word-wrap; }
+    }
+}
+
+// a page's content: a column as wide as the page up to Theme.column, scrolled
+component Page inherits ScrollView {
+    HorizontalLayout {
+        padding-left: Theme.page-pad; padding-right: Theme.page-pad; padding-top: 52px; padding-bottom: 40px;
+        VerticalLayout {
+            max-width: Theme.column; horizontal-stretch: 1; alignment: start;
+            @children
+        }
+        Rectangle { horizontal-stretch: 0; }
+    }
+}
+
+export component AppWindow inherits Window {
+    title: "nxnative";
+    preferred-width: 1240px;
+    preferred-height: 800px;
+    min-width: 980px;
+    min-height: 640px;
+    background: Theme.bg;
+    default-font-family: "Noto Sans";
+
+    // ---- navigation ----
+    in-out property <int> page;               // 0 game, 1 LiveContainer, 2 device and Apple ID, 3 settings
+    in property <[GameItem]> games;
+    in-out property <int> selected: -1;
+    in property <bool> dropping;
+    in property <string> toast;
+
+    // ---- sidebar ----
+    in property <string> lc-detail;
+    in property <int> lc-state: 2;
+    in property <string> device-name;
+    in property <string> device-detail;
+    in property <bool> device-connected;
+    in property <string> signed-in-as;        // "" = signed out
+    in property <string> initials;
+
+    // ---- a game ----
+    in property <string> g-title;
+    in property <string> g-facts;
+    in property <image> g-icon;
+    in property <bool> g-has-icon;
+    in property <[ChipData]> g-chips;
+    in property <bool> g-ready;               // the files are complete
+    in property <bool> g-built;               // the IPA exists
+    in property <bool> g-app;                 // an iOS app added as an IPA: nothing to build
+    in property <string> g-built-line;
+    in-out property <bool> g-device-shaders;   // this game's shaders are compiled on the device
+    // its build
+    in property <bool> b-active;
+    in property <bool> b-failed;
+    in property <bool> b-rebuild;             // a rebuild asked for while the IPA exists
+    in property <string> b-label;
+    in property <string> b-progress;
+    in property <float> b-fraction;
+    in property <bool> b-indeterminate;
+    in property <int> b-stage: -1;
+    in property <int> b-stages;
+    in property <string> b-log;
+    in-out property <bool> b-log-open;
+    // as a standalone app
+    in property <string> sa-state;
+    in property <int> sa-kind;
+    in property <string> sa-line;
+    in property <bool> sa-installed;
+    in property <bool> sa-busy;
+    in property <float> sa-fraction;
+    in property <string> sa-progress;
+    in property <string> sa-log;
+    in-out property <bool> sa-log-open;
+    // in LiveContainer
+    in property <string> lcd-state;
+    in property <int> lcd-kind;
+    in property <string> lcd-line;
+    in property <bool> lcd-copied;
+    in property <bool> lcd-busy;
+    in property <float> lcd-fraction;
+    in property <string> lcd-progress;
+    in property <string> lcd-log;
+    in-out property <bool> lcd-log-open;
+    in property <bool> share-active;
+    in property <bool> share-game;            // the share is this game's (else the certificate's)
+    in property <string> share-url;
+    in property <image> share-qr;
+
+    // ---- LiveContainer ----
+    in property <bool> lc-installed;
+    in property <string> lc-facts;
+    in property <[ChipData]> lc-chips;
+    in property <bool> lc-standard;           // installed without the increased memory limit
+    in property <[LcGame]> lc-games;
+    in property <bool> lc-busy;
+    in property <string> lc-state-label;
+    in property <float> lc-fraction;
+    in property <string> lc-progress;
+    in property <string> lc-log;
+    in-out property <bool> lc-log-open;
+
+    // ---- the device and the Apple ID ----
+    in property <[string]> devices;
+    in-out property <int> device-index;
+    in property <string> d-title;
+    in property <string> d-line;
+    in property <[ChipData]> d-chips;
+    in property <string> d-cable;
+    in property <int> d-cable-state;
+    in property <string> d-space;
+    in property <bool> d-busy;
+    in property <string> d-label;
+    in property <float> d-fraction;
+    in property <string> d-log;
+    in-out property <bool> d-log-open;
+    in property <string> a-team;
+    in property <string> a-cert;
+    in property <int> a-cert-state;
+    in property <bool> has-saved-password;
+    in property <bool> signing-in;
+    in-out property <string> apple-id;
+    in-out property <string> password;
+    in-out property <bool> remember: true;
+    in property <[AppIdRow]> app-ids;
+    in property <bool> app-ids-loading;
+
+    // ---- settings ----
+    in property <string> s-sdk;
+    in property <bool> s-sdk-ok;
+    in property <string> s-metal;
+    in property <bool> s-metal-ok;
+    in property <bool> s-tools-busy;
+    in property <string> s-tools-label;
+    in property <float> s-tools-fraction;
+    in property <string> s-data;
+    in property <string> s-scripts;
+    in-out property <bool> show-fps: true;
+    in-out property <bool> debug-builds: false;
+    // updates (nxcore::update): this app's and the bundle's versions, the latest release in a line, a check or install under way
+    in property <string> u-app;
+    in property <string> u-bundle;
+    in property <string> u-label;
+    in property <bool> u-busy;
+    in property <float> u-fraction;
+    in property <bool> u-available;
+    in-out property <bool> u-check-on-start: true;
+    callback check-updates();
+    callback install-updates();
+    // the card in the corner: an update to install, its progress, then Restart (a new app) or OK (a new bundle)
+    in property <bool> u-card;
+    in property <string> u-card-text;
+    in property <bool> u-installing;
+    in property <bool> u-restart;
+    in property <bool> u-finished;
+    callback dismiss-update();
+    callback restart-app();
+    // what's new: the releases newer than this computer's (the card's button), or those just installed (once, after the update)
+    in property <[ReleaseChanges]> whats-new;
+    in property <bool> whats-new-open;
+    in property <string> whats-new-title;
+    callback show-whats-new();
+    callback close-whats-new();
+    in-out property <bool> more-ram: true;    // installs (standalone, LiveContainer) ask for the increased memory limit
+
+    // ---- dialogs ----
+    in property <bool> tfa-open;
+    in property <string> tfa-message;
+    in property <[Choice]> tfa-numbers;
+    in-out property <string> tfa-code;
+    in property <bool> certs-open;
+    in property <[Choice]> certs;
+
+    // ---- actions ----
+    callback select-game(int);
+    callback select-page(int);
+    callback add-files();
+    callback remove-game();
+    callback build();
+    callback cancel-build();
+    callback sa-install();
+    callback sa-remove();
+    callback lcd-copy();
+    callback lcd-cancel();
+    callback lcd-share();
+    callback lcd-save();
+    callback device-log();
+    callback export-logs();
+    callback game-shaders-changed(bool);
+    callback stop-share();
+    callback lc-install();
+    callback lc-certificate();
+    callback lc-copy-game(int);
+    callback select-device(int);
+    callback sign-in();
+    callback sign-out();
+    callback forget-password();
+    callback install-ipa();
+    callback load-app-ids();
+    callback app-id-more(string);
+    callback pick-xip();
+    callback pick-metal();
+    callback pick-repo();
+    callback open-data();
+    callback open-logs();
+    callback settings-changed();
+    callback tfa-submit();
+    callback tfa-sms(int);
+    callback tfa-devices();
+    callback tfa-resend();
+    callback tfa-cancel();
+    callback revoke(string);
+    callback certs-cancel();
+
+    HorizontalLayout {
+        // ---- sidebar ----
+        Rectangle {
+            width: 264px;
+            background: Theme.sidebar;
+            VerticalLayout {
+                padding: 14px; padding-top: 18px; spacing: 4px;
+                HorizontalLayout {
+                    padding-bottom: 18px; padding-left: 8px; spacing: 10px;
+                    Rectangle {
+                        width: 26px; height: 26px; border-radius: 8px; background: Theme.accent-fill;
+                        Text { text: "nx"; color: white; font-size: 12.5px; font-weight: 800; }
+                    }
+                    Text { text: "nxnative"; color: Theme.text; font-size: 16px; font-weight: 700; vertical-alignment: center; }
+                }
+                HorizontalLayout { padding-left: 8px; padding-bottom: 4px; Heading { text: "Library"; } }
+                ScrollView {
+                    vertical-stretch: 1;
+                    VerticalLayout {
+                        spacing: 2px; alignment: start;
+                        SideItem { lc: true; selected: page == 1; game: { name: "LiveContainer", state: lc-state, detail: lc-detail }; clicked => { root.select-page(1); } }
+                        for g[i] in games: SideItem { game: g; selected: page == 0 && i == selected; clicked => { root.select-game(i); } }
+                        Rectangle {
+                            height: 44px; border-radius: 11px;
+                            background: add-ta.has-hover ? #ffffff07 : transparent;
+                            HorizontalLayout {
+                                padding-left: 8px; spacing: 11px;
+                                Rectangle {
+                                    width: 38px; height: 38px; border-radius: 9px; y: (parent.height - self.height) / 2;
+                                    border-width: 1.5px; border-color: Theme.line;
+                                    Text { text: "+"; color: add-ta.has-hover ? Theme.text : Theme.muted; font-size: 18px; }
+                                }
+                                Text { text: "Add games"; color: add-ta.has-hover ? Theme.text : Theme.muted; font-size: 13px; vertical-alignment: center; }
+                            }
+                            add-ta := TouchArea { mouse-cursor: pointer; clicked => { root.add-files(); } }
+                        }
+                    }
+                }
+                // the device
+                Rectangle {
+                    height: 48px; border-radius: 11px; background: page == 2 ? Theme.raised : dev-ta.has-hover ? #ffffff07 : transparent;
+                    HorizontalLayout {
+                        padding-left: 17px; padding-right: 14px; spacing: 20px;
+                        Rectangle {
+                            width: 20px; height: 28px; border-radius: 5px; y: (parent.height - self.height) / 2;
+                            border-width: 2px; border-color: device-connected ? Theme.muted : Theme.faint;
+                        }
+                        VerticalLayout {
+                            alignment: center; spacing: 1px;
+                            Text { text: device-connected ? device-name : "No device"; color: device-connected ? Theme.text : Theme.muted; font-size: 13px; font-weight: 600; overflow: elide; }
+                            if device-connected: Text { text: device-detail; color: Theme.muted; font-size: 11.5px; overflow: elide; }
+                        }
+                        Dot { c: device-connected ? Theme.ok : Theme.faint; y: (parent.height - self.height) / 2; }
+                    }
+                    dev-ta := TouchArea { mouse-cursor: pointer; clicked => { root.select-page(2); } }
+                }
+                // the Apple ID and the settings
+                HorizontalLayout {
+                    height: 48px; spacing: 4px;
+                    Rectangle {
+                        border-radius: 11px; background: acc-ta.has-hover ? #ffffff07 : transparent;
+                        HorizontalLayout {
+                            padding-left: 13px; spacing: 15px;
+                            Rectangle {
+                                width: 28px; height: 28px; border-radius: 14px; y: (parent.height - self.height) / 2;
+                                background: signed-in-as != "" ? Theme.avatar-fill : Theme.raised;
+                                Text { text: signed-in-as != "" ? initials : "?"; color: white; font-size: 11.5px; font-weight: 700; }
+                            }
+                            VerticalLayout {
+                                alignment: center; spacing: 1px;
+                                Text { text: signed-in-as != "" ? signed-in-as : signing-in ? "Signing in…" : "Sign in"; color: signed-in-as != "" ? Theme.text : Theme.accent2; font-size: 12.5px; font-weight: 500; overflow: elide; }
+                                if signed-in-as != "": Text { text: "Apple ID"; color: Theme.muted; font-size: 11px; }
+                            }
+                        }
+                        acc-ta := TouchArea { mouse-cursor: pointer; clicked => { root.select-page(2); } }
+                    }
+                    Rectangle {
+                        width: 40px; height: 40px; border-radius: 10px; y: (parent.height - self.height) / 2;
+                        background: page == 3 ? Theme.raised : gear-ta.has-hover ? #ffffff0c : transparent;
+                        Text { text: "⚙"; color: page == 3 || gear-ta.has-hover ? Theme.text : Theme.muted; font-size: 17px; }
+                        gear-ta := TouchArea { mouse-cursor: pointer; clicked => { root.select-page(3); } }
+                    }
+                }
+            }
+            Rectangle { x: parent.width - 1px; width: 1px; background: Theme.line; }
+        }
+
+        // ---- page ----
+        Rectangle {
+            clip: true;
+
+            // ---- no games yet ----
+            if page == 0 && games.length == 0: VerticalLayout {
+                alignment: center;
+                HorizontalLayout {
+                    alignment: center;
+                    Rectangle {
+                        width: 380px; height: 220px; border-radius: 22px; border-width: 1.5px; border-color: empty-ta.has-hover ? Theme.accent : Theme.line;
+                        background: empty-ta.has-hover ? #ffffff05 : transparent;
+                        VerticalLayout {
+                            alignment: center; spacing: 8px;
+                            Text { text: "+"; color: Theme.muted; font-size: 36px; horizontal-alignment: center; }
+                            Text { text: "Add games"; color: Theme.text; font-size: 17px; font-weight: 650; horizontal-alignment: center; }
+                            Text { text: ".nsp  ·  .xci  ·  prod.keys  ·  .ipa"; color: Theme.faint; font-size: 12.5px; horizontal-alignment: center; }
+                        }
+                        empty-ta := TouchArea { mouse-cursor: pointer; clicked => { root.add-files(); } }
+                    }
+                }
+            }
+
+            // ---- a game ----
+            if page == 0 && games.length > 0: Rectangle {
+                if g-has-icon: Image { source: g-icon; x: parent.width - 600px; y: -180px; width: 740px; height: 740px; image-fit: cover; opacity: 0.16; }
+                Rectangle { background: @linear-gradient(90deg, Theme.bg 40%, #0e101400 100%); }
+                Rectangle { background: @linear-gradient(180deg, #0e101400 20%, Theme.bg 58%); }
+                Page {
+                    Hero {
+                        title: g-title; facts: g-facts; chips: g-chips;
+                        chip-clicked => { root.add-files(); }
+                        Rectangle {
+                            width: 104px; height: 104px; border-radius: 22px; clip: true; background: Theme.raised;
+                            drop-shadow-color: #00000090; drop-shadow-blur: 28px; drop-shadow-offset-y: 8px;
+                            if g-has-icon: Image { source: g-icon; width: parent.width; height: parent.height; image-fit: cover; }
+                            if !g-has-icon: Text { text: "◆"; color: Theme.faint; font-size: 36px; }
+                        }
+                    }
+                    Rectangle { height: 36px; }
+                    Line { }
+
+                    // the build: until the IPA exists, while it is made, and when it failed
+                    if !g-built || b-active || b-failed: Place {
+                        mark: 2;
+                        title: b-active ? "Building" : b-failed ? "Build failed" : "Build";
+                        title-color: b-failed && !b-active ? Theme.bad : Theme.text;
+                        status: b-active ? b-label : b-label;
+                        status-kind: b-active ? 3 : 2;
+                        working: b-active; fraction: b-fraction; indeterminate: b-indeterminate; progress: b-progress;
+                        has-log: b-log != ""; log-open <=> root.b-log-open;
+                        if !b-active: Check { label: "Shaders on device"; checked <=> root.g-device-shaders; toggled(v) => { root.game-shaders-changed(v); } }
+                        if !b-active: Rectangle { width: 8px; }
+                        if !b-active: Button { label: b-failed ? "Try again" : "Build"; primary: true; enabled: g-ready; clicked => { root.build(); } }
+                        if b-active: Button { label: "Cancel"; clicked => { root.cancel-build(); } }
+                    }
+                    if (!g-built || b-active || b-failed) && b-log-open && b-log != "": LogPanel { padding-top: 14px; padding-bottom: 14px; title: "Build"; text: b-log; }
+
+                    // the IPA exists: the two places the game can live
+                    if g-built: Place {
+                        mark: 0; icon: g-icon; has-icon: g-has-icon;
+                        title: "Standalone";
+                        status: sa-state; status-kind: sa-kind;
+                        working: sa-busy; fraction: sa-fraction; progress: sa-progress;
+                        has-log: sa-log != ""; log-open <=> root.sa-log-open;
+                        Check { label: "More memory"; checked <=> root.more-ram; toggled => { root.settings-changed(); } }
+                        Rectangle { width: 8px; }
+                        if sa-installed: Button { label: "Remove"; enabled: !sa-busy; clicked => { root.sa-remove(); } }
+                        Button { label: sa-installed ? "Reinstall" : "Install"; primary: !sa-installed; enabled: !sa-busy && !b-active && device-connected; clicked => { root.sa-install(); } }
+                    }
+                    if g-built && sa-log-open && sa-log != "": LogPanel { padding-top: 14px; padding-bottom: 14px; title: "Standalone"; text: sa-log; }
+                    if g-built: Place {
+                        mark: 1;
+                        title: "LiveContainer";
+                        status: lcd-state + (lcd-state != "" && lcd-line != "" ? "  ·  " : "") + lcd-line; status-kind: lcd-kind;
+                        working: lcd-busy; fraction: lcd-fraction; progress: lcd-progress;
+                        has-log: lcd-log != ""; log-open <=> root.lcd-log-open;
+                        if lc-installed && !(share-active && share-game): Button { label: "Wi-Fi"; enabled: !lcd-busy && !b-active; clicked => { root.lcd-share(); } }
+                        if share-active && share-game: Button { label: "Stop Wi-Fi"; clicked => { root.stop-share(); } }
+                        if !lc-installed: Button { label: "Get it"; clicked => { root.select-page(1); } }
+                        if lc-installed && !lcd-busy: Button { label: lcd-copied ? "Update" : "Copy"; primary: !lcd-copied; enabled: device-connected && !b-active; clicked => { root.lcd-copy(); } }
+                        if lcd-busy: Button { label: "Cancel"; clicked => { root.lcd-cancel(); } }
+                    }
+                    if g-built && share-active && share-game: VerticalLayout { padding-top: 14px; padding-bottom: 14px; padding-left: 52px; Qr { qr: share-qr; url: share-url; } }
+                    if g-built && lcd-log-open && lcd-log != "": LogPanel { padding-top: 14px; padding-bottom: 14px; title: "LiveContainer"; text: lcd-log; }
+
+                    HorizontalLayout {
+                        padding-top: 14px; spacing: 18px;
+                        if g-built: Text { text: g-built-line; color: Theme.faint; font-size: 12.5px; vertical-alignment: center; }
+                        if g-built && !b-active && !g-app: Link { text: "Rebuild"; clicked => { root.build(); } }
+                        if g-built && !b-active && !g-app: Check { label: "Shaders on device"; checked <=> root.g-device-shaders; toggled(v) => { root.game-shaders-changed(v); } }
+                        Rectangle { horizontal-stretch: 1; }
+                        if g-built: Link { text: "Save IPA"; clicked => { root.lcd-save(); } }
+                        if device-connected: Link { text: "Device log"; clicked => { root.device-log(); } }
+                        if !b-active: Link { text: "Remove"; danger: true; clicked => { root.remove-game(); } }
+                    }
+                }
+            }
+
+            // ---- LiveContainer ----
+            if page == 1: Rectangle {
+                Rectangle { x: parent.width - 500px; y: -240px; width: 720px; height: 720px; border-radius: 360px; background: @radial-gradient(circle, #1fd1a530 0%, #2b7cff0c 45%, #0e101400 70%); }
+                Page {
+                    Hero {
+                        title: "LiveContainer"; facts: lc-facts; chips: lc-chips;
+                        LcMark { size: 104px; drop-shadow-color: #00000090; drop-shadow-blur: 28px; drop-shadow-offset-y: 8px; }
+                    }
+                    Rectangle { height: 36px; }
+                    Line { }
+                    Place {
+                        mark: 1;
+                        title: lc-installed ? "On the device" : "Not installed";
+                        status: lc-state-label; status-kind: lc-busy ? 3 : lc-installed ? 0 : 1;
+                        working: lc-busy; fraction: lc-fraction; progress: lc-progress;
+                        has-log: lc-log != ""; log-open <=> root.lc-log-open;
+                        Check { label: "More memory"; checked <=> root.more-ram; toggled => { root.settings-changed(); } }
+                        Rectangle { width: 8px; }
+                        if lc-installed && !(share-active && !share-game): Button { label: "Certificate"; clicked => { root.lc-certificate(); } }
+                        if share-active && !share-game: Button { label: "Done"; clicked => { root.stop-share(); } }
+                        Button {
+                            label: lc-installed ? "Reinstall" : "Install"; primary: !lc-installed || (more-ram && lc-standard);
+                            enabled: !lc-busy && device-connected; clicked => { root.lc-install(); }
+                        }
+                    }
+                    if share-active && !share-game: VerticalLayout { padding-top: 14px; padding-bottom: 14px; padding-left: 52px; Qr { qr: share-qr; url: share-url; } }
+                    if lc-log-open && lc-log != "": LogPanel { padding-top: 14px; padding-bottom: 14px; title: "LiveContainer"; text: lc-log; }
+                    if lc-installed: Group {
+                        padding-top: 36px;
+                        heading: "Games";
+                        if lc-games.length == 0: Row { name: "None"; }
+                        for g in lc-games: Place {
+                            mark: 0; icon: g.icon; has-icon: g.has-icon;
+                            title: g.name; status: g.detail;
+                            if g.action != "": Button { label: g.action; primary: g.newer; enabled: g.game >= 0 && !lcd-busy && device-connected; clicked => { root.lc-copy-game(g.game); } }
+                        }
+                    }
+                }
+            }
+
+            // ---- the device and the Apple ID ----
+            if page == 2: Page {
+                HorizontalLayout {
+                    spacing: 24px;
+                    Rectangle {
+                        width: 78px; height: 104px; border-radius: 15px; border-width: 4px; border-color: device-connected ? Theme.muted : Theme.faint;
+                        Rectangle { width: parent.width - 16px; height: parent.height - 16px; border-radius: 9px; background: device-connected ? @linear-gradient(160deg, #2b7cff55 0%, #8b6cff33 100%) : Theme.raised; }
+                    }
+                    VerticalLayout {
+                        alignment: center; spacing: 8px; horizontal-stretch: 1;
+                        PageTitle { text: device-connected ? d-title : "No device"; }
+                        if device-connected: Text { text: d-line; color: Theme.muted; font-size: 13px; overflow: elide; }
+                        if d-chips.length > 0: HorizontalLayout { spacing: 6px; alignment: start; padding-top: 4px; for c in d-chips: Chip { label: c.label; kind: c.kind; } }
+                    }
+                    if devices.length > 1: VerticalLayout {
+                        alignment: center;
+                        Rectangle {
+                            height: 32px; border-radius: 16px; background: Theme.raised;
+                            HorizontalLayout {
+                                padding: 3px; spacing: 2px;
+                                for d[i] in devices: Rectangle {
+                                    border-radius: 13px; background: i == device-index ? Theme.surface : transparent;
+                                    HorizontalLayout { padding-left: 12px; padding-right: 12px; Text { text: d; color: i == device-index ? Theme.text : Theme.muted; font-size: 12.5px; vertical-alignment: center; } }
+                                    TouchArea { mouse-cursor: pointer; clicked => { root.select-device(i); } }
+                                }
+                            }
+                        }
+                    }
+                }
+                Rectangle { height: 36px; }
+                if device-connected: Group {
+                    padding-bottom: 32px;
+                    heading: "Device";
+                    Row { name: "Cable"; value: d-cable; state: d-cable-state; }
+                    Row { name: "Free space"; value: d-space; }
+                    Row { name: "Logs"; value: d-busy ? d-label : ""; action: "Export"; action-enabled: !d-busy; clicked => { root.export-logs(); } }
+                    if d-busy: VerticalLayout { padding-top: 12px; padding-bottom: 12px; Bar { fraction: d-fraction; indeterminate: d-fraction <= 0; } }
+                    if !d-busy && d-label != "": HorizontalLayout {
+                        padding-top: 12px; spacing: 12px;
+                        Text { text: d-label; color: Theme.muted; font-size: 12.5px; overflow: elide; horizontal-stretch: 1; min-width: 0; }
+                        if d-log != "": LogToggle { open <=> root.d-log-open; }
+                    }
+                    if d-log-open && d-log != "": LogPanel { padding-top: 12px; title: "Device"; text: d-log; }
+                }
+                if signed-in-as != "": Group {
+                    padding-bottom: 32px;
+                    heading: "Apple ID";
+                    HorizontalLayout {
+                        height: 64px; spacing: 12px;
+                        Rectangle {
+                            width: 36px; height: 36px; border-radius: 18px; y: (parent.height - self.height) / 2;
+                            background: Theme.avatar-fill;
+                            Text { text: initials; color: white; font-size: 14px; font-weight: 700; }
+                        }
+                        VerticalLayout {
+                            alignment: center; spacing: 1px; horizontal-stretch: 1;
+                            Text { text: signed-in-as; color: Theme.text; font-size: 13.5px; font-weight: 600; overflow: elide; }
+                            Text { text: a-team; color: Theme.muted; font-size: 12px; overflow: elide; }
+                        }
+                        Button { label: "Sign out"; y: (parent.height - self.height) / 2; clicked => { root.sign-out(); } }
+                    }
+                    Line { }
+                    Row { name: "Certificate"; value: a-cert; state: a-cert-state; }
+                    Row { name: "Password"; value: has-saved-password ? "Saved" : "Not saved"; }
+                }
+                if signed-in-as == "": Group {
+                    padding-bottom: 32px;
+                    heading: "Apple ID";
+                    HorizontalLayout {
+                        padding-top: 14px; spacing: 10px;
+                        Field { horizontal-stretch: 1; placeholder: "Email"; text <=> root.apple-id; }
+                        Field { horizontal-stretch: 1; placeholder: has-saved-password ? "Saved password" : "Password"; password: true; text <=> root.password; accepted => { root.sign-in(); } }
+                    }
+                    HorizontalLayout {
+                        padding-top: 14px; padding-bottom: 14px; spacing: 16px;
+                        Check { label: "Remember"; checked <=> root.remember; }
+                        if has-saved-password: Link { text: "Forget"; clicked => { root.forget-password(); } }
+                        Rectangle { horizontal-stretch: 1; }
+                        Button { label: signing-in ? "Signing in…" : "Sign in"; primary: true; enabled: !signing-in && apple-id != "" && (password != "" || has-saved-password); clicked => { root.sign-in(); } }
+                    }
+                    Line { }
+                }
+                if signed-in-as != "": Group {
+                    heading: "Apps";
+                    Row { name: "Install an IPA"; action: "Choose"; action-enabled: device-connected && !d-busy; clicked => { root.install-ipa(); } }
+                    Row { name: "App IDs"; value: app-ids.length > 0 ? app-ids.length : ""; action: app-ids-loading ? "…" : "Show"; action-enabled: !app-ids-loading; clicked => { root.load-app-ids(); } }
+                    for a in app-ids: VerticalLayout {
+                        HorizontalLayout {
+                            height: 52px; spacing: 12px; padding-left: 20px;
+                            VerticalLayout {
+                                alignment: center; spacing: 1px; horizontal-stretch: 1;
+                                Text { text: a.name; color: Theme.text; font-size: 13px; overflow: elide; }
+                                Text { text: a.identifier; color: Theme.faint; font-size: 11px; overflow: elide; }
+                            }
+                            if a.more: Text { text: "More memory"; color: Theme.muted; font-size: 12.5px; vertical-alignment: center; }
+                            if !a.more: Button { label: "More memory"; y: (parent.height - self.height) / 2; enabled: !d-busy; clicked => { root.app-id-more(a.identifier); } }
+                        }
+                        Line { }
+                    }
+                }
+            }
+
+            // ---- settings ----
+            if page == 3: Page {
+                PageTitle { text: "Settings"; }
+                Rectangle { height: 36px; }
+                Group {
+                    padding-bottom: 32px;
+                    heading: "Apple tools";
+                    Row { name: "iOS SDK"; value: s-sdk; state: s-sdk-ok ? 0 : 2; action: s-sdk-ok ? "Replace" : "Choose"; primary: !s-sdk-ok; action-enabled: !s-tools-busy; clicked => { root.pick-xip(); } }
+                    Row { name: "Metal"; value: s-metal; state: s-metal-ok ? 0 : 2; action: s-metal-ok ? "Replace" : "Choose"; primary: !s-metal-ok; action-enabled: !s-tools-busy; clicked => { root.pick-metal(); } }
+                    if s-tools-busy || s-tools-label != "": VerticalLayout {
+                        padding-top: 12px; spacing: 10px;
+                        Text { text: s-tools-label; color: Theme.muted; font-size: 12.5px; overflow: elide; }
+                        if s-tools-busy: Bar { fraction: s-tools-fraction; indeterminate: s-tools-fraction <= 0; }
+                    }
+                }
+                Group {
+                    padding-bottom: 32px;
+                    heading: "Builds";
+                    Row { name: "Frame-rate counter"; Toggle { on <=> root.show-fps; y: (parent.height - self.height) / 2; toggled => { root.settings-changed(); } } }
+                    Row { name: "Debug builds"; value: "Diagnostic logs for local play"; Toggle { on <=> root.debug-builds; y: (parent.height - self.height) / 2; toggled => { root.settings-changed(); } } }
+                }
+                Group {
+                    padding-bottom: 32px;
+                    heading: "Updates";
+                    Row { name: "App"; value: root.u-app; }
+                    Row { name: "Bundle"; value: root.u-bundle; }
+                    Row {
+                        name: "Latest release";
+                        value: root.u-label == "" ? "Signed releases from GitHub" : root.u-label;
+                        state: root.u-available ? 1 : 3;
+                        action: root.u-available ? "Install" : "Check";
+                        primary: root.u-available;
+                        action-enabled: !root.u-busy;
+                        clicked => { if (root.u-available) { root.install-updates(); } else { root.check-updates(); } }
+                    }
+                    if root.u-busy: VerticalLayout {
+                        padding-top: 12px;
+                        Bar { fraction: root.u-fraction; indeterminate: root.u-fraction <= 0; }
+                    }
+                    Row { name: "Check for updates"; value: "At start and every 2 minutes"; Toggle { on <=> root.u-check-on-start; y: (parent.height - self.height) / 2; toggled => { root.settings-changed(); } } }
+                }
+                Group {
+                    heading: "Storage";
+                    Row { name: "Data"; value: s-data; action: "Open"; clicked => { root.open-data(); } }
+                    Row { name: "Logs"; action: "Open"; clicked => { root.open-logs(); } }
+                    Row { name: "Scripts"; value: s-scripts; action: "Choose"; clicked => { root.pick-repo(); } }
+                }
+            }
+        }
+    }
+
+    // ---- files dragged over the window ----
+    if dropping: Rectangle {
+        background: #0e1014d0;
+        Rectangle {
+            x: 24px; y: 24px; width: parent.width - 48px; height: parent.height - 48px; border-radius: 24px;
+            border-width: 2px; border-color: Theme.accent;
+            VerticalLayout {
+                alignment: center; spacing: 10px;
+                Text { text: "Drop to add"; color: Theme.text; font-size: 22px; font-weight: 700; horizontal-alignment: center; }
+                Text { text: ".nsp  ·  .xci  ·  prod.keys  ·  .ipa"; color: Theme.muted; font-size: 13px; horizontal-alignment: center; }
+            }
+        }
+    }
+
+    // ---- an update: what is new, its progress, then Restart ----
+    if root.u-card: Rectangle {
+        width: 340px; height: card.preferred-height;
+        x: parent.width - self.width - 20px; y: parent.height - self.height - 20px;
+        border-radius: 12px; background: Theme.raised; border-width: 1px; border-color: Theme.line;
+        drop-shadow-color: #00000080; drop-shadow-blur: 20px;
+        card := VerticalLayout {
+            padding: 14px; spacing: 10px;
+            Text {
+                text: root.u-installing ? "Updating" : root.u-restart ? "Update installed" : root.u-finished ? "Update" : "Update available";
+                color: Theme.text; font-size: 13px; font-weight: 650;
+            }
+            Text { text: root.u-card-text; color: Theme.muted; font-size: 12.5px; wrap: word-wrap; }
+            if root.u-installing: Bar { fraction: root.u-fraction; indeterminate: root.u-fraction <= 0; }
+            if !root.u-installing: HorizontalLayout {
+                alignment: end; spacing: 8px;
+                if root.whats-new.length > 0: Button { label: "What's new"; clicked => { root.show-whats-new(); } }
+                if !root.u-restart: Button { label: root.u-finished ? "OK" : "Later"; clicked => { root.dismiss-update(); } }
+                if !root.u-finished: Button { label: "Install"; primary: true; clicked => { root.install-updates(); } }
+                if root.u-restart: Button { label: "Restart"; primary: true; clicked => { root.restart-app(); } }
+            }
+        }
+    }
+
+    // ---- what's new ----
+    if whats-new-open: Dialog {
+        title: root.whats-new-title;
+        ScrollView {
+            height: min(420px, changes.preferred-height); viewport-height: changes.preferred-height;
+            // a fixed width (the dialog's 372px inside its padding, less the scroll bar): wrapped text measures its height at it
+            changes := VerticalLayout {
+                width: 360px; spacing: 14px;
+                for r in root.whats-new: VerticalLayout {
+                    spacing: 6px;
+                    Text { text: r.title; color: Theme.text; font-size: 13px; font-weight: 650; }
+                    for n in r.notes: HorizontalLayout {
+                        spacing: 8px;
+                        Text { text: "•"; color: Theme.muted; font-size: 12.5px; }
+                        Text { text: n; color: Theme.muted; font-size: 12.5px; wrap: word-wrap; width: 340px; }
+                    }
+                }
+            }
+        }
+        HorizontalLayout { alignment: end; Button { label: "OK"; primary: true; clicked => { root.close-whats-new(); } } }
+    }
+
+    // ---- a short message ----
+    if toast != "": Rectangle {
+        width: min(560px, toast-text.preferred-width + 36px);
+        height: toast-text.preferred-height + 20px;
+        x: 264px + (parent.width - 264px - self.width) / 2; y: parent.height - self.height - 24px;
+        border-radius: 12px; background: Theme.raised; border-width: 1px; border-color: Theme.line;
+        drop-shadow-color: #00000080; drop-shadow-blur: 20px;
+        toast-text := Text { text: toast; color: Theme.text; font-size: 12.5px; wrap: word-wrap; width: min(520px, self.preferred-width); horizontal-alignment: center; }
+    }
+
+    // ---- two-factor code ----
+    if tfa-open: Dialog {
+        title: "Verification code";
+        if tfa-message != "": Text { text: tfa-message; color: Theme.muted; font-size: 12.5px; wrap: word-wrap; }
+        Field { placeholder: "6-digit code"; text <=> root.tfa-code; accepted => { root.tfa-submit(); } }
+        HorizontalLayout {
+            spacing: 8px; alignment: start;
+            Button { label: "Verify"; primary: true; enabled: tfa-code != ""; clicked => { root.tfa-submit(); } }
+            Button { label: "Resend"; clicked => { root.tfa-resend(); } }
+            Button { label: "Cancel"; clicked => { root.tfa-cancel(); } }
+        }
+        HorizontalLayout {
+            spacing: 8px; alignment: start;
+            Button { label: "To devices"; clicked => { root.tfa-devices(); } }
+            for n in tfa-numbers: Button { label: "SMS " + n.label; clicked => { root.tfa-sms(n.key.to-float()); } }
+            if tfa-numbers.length == 0: Button { label: "By SMS"; clicked => { root.tfa-sms(1); } }
+        }
+    }
+
+    // ---- too many certificates ----
+    if certs-open: Dialog {
+        title: "Too many certificates";
+        Text { text: "Apps signed with a revoked one stop opening."; color: Theme.muted; font-size: 12.5px; wrap: word-wrap; }
+        for c in certs: HorizontalLayout {
+            spacing: 10px;
+            Text { text: c.label; color: Theme.text; font-size: 13px; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; }
+            Button { label: "Revoke"; clicked => { root.revoke(c.key); } }
+        }
+        HorizontalLayout { alignment: end; Button { label: "Cancel"; clicked => { root.certs-cancel(); } } }
+    }
+}

@@ -1,0 +1,28 @@
+[package]
+name = "nxapp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "nxnativev2"
+path = "src/main.rs"
+
+[dependencies]
+nxcore.workspace = true
+anyhow.workspace = true
+tokio.workspace = true
+futures = "0.3"
+slint = { version = "1.18", features = ["unstable-winit-030"] }
+rfd = "0.17"
+tracing = "0.1"
+
+# the development snapshots of the pages (NXNATIVE_SNAPSHOT) and the mockup renderer (examples/mockup.rs)
+png = "0.18"
+
+[build-dependencies]
+slint-build = "1.18"
+
+[features]
+# tests of updates only (never in a release): the client trusts NXNATIVEV2_TEST_PUBLIC_KEY, given at build time, instead of the release key
+test-update-key = ["nxcore/test-update-key"]

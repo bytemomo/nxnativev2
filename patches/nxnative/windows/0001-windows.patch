@@ -1,0 +1,26 @@
+diff --git a/scripts/build_ipa_from_nsp.py b/scripts/build_ipa_from_nsp.py
+index 0888cab..3039a25 100755
+--- a/scripts/build_ipa_from_nsp.py
++++ b/scripts/build_ipa_from_nsp.py
+@@ -790,6 +790,7 @@ def check_prereqs(env, xlate, mac=False):   # mac: a Mac-only build (PLATFORM 'm
+     missing = [m for m in ('lz4.block', 'capstone', 'fontTools') if not _importable(m)] + ([] if _importable('compression.zstd') or _importable('backports.zstd') else ['backports.zstd'])   # zstd: built in from Python 3.14
+     if missing: raise BuildError(f'the current Python ({sys.executable}) is missing modules: {", ".join(missing)} (pip install lz4 capstone fonttools backports.zstd; backports.zstd only before Python 3.14)')
+     if sys.platform == 'darwin': tools = {'xcodebuild': 'Xcode', 'xcodegen': 'brew install xcodegen', 'dotnet': '.NET SDK 10', 'zstd': 'brew install zstd', 'spirv-cross': 'brew install spirv-cross', 'make': 'Xcode'}
++    elif sys.platform == 'win32': tools = {'dotnet': '.NET 10', 'spirv-cross': 'spirv-cross', 'clang': 'clang (LLVM)', 'ld64.lld': 'lld (LLVM)', 'xcrun': 'the xcrun launcher of the packaged app (runs Apple\'s Metal compiler)'}   # no bash, make or wine
+     else: tools = {'dotnet': '.NET 10', 'spirv-cross': 'spirv-cross', 'make': 'make', 'clang': 'clang', 'ld64.lld': 'lld', 'wine': 'wine (runs Apple\'s Metal Developer Tools for Windows)'}   # Linux: dm/linux/README.md
+     if mac: del tools['xcodegen']
+     gone = [f'{t} ({how})' for t, how in tools.items() if not shutil.which(t, path=env['PATH'])]
+@@ -815,6 +816,13 @@ def xlate_launcher(xlate, d):
+                 and (d / 'dmsh_xlate').read_text() == script): return d / 'dmsh_xlate'
+     except OSError: pass
+     rmtree(d); d.mkdir(parents=True)
++    if sys.platform == 'win32':   # no symlinks without a privilege, no shell scripts: copies, and a launcher .exe that runs <its name>.dll with dotnet (DM_DOTNET_LAUNCHER)
++        launcher = os.environ.get('DM_DOTNET_LAUNCHER')
++        if not launcher or not Path(launcher).is_file(): raise BuildError('no dotnet launcher (DM_DOTNET_LAUNCHER): the packaged app provides it')
++        for f in xlate.parent.iterdir():
++            if f.suffix in ('.dll', '.json'): shutil.copy2(f, d / f.name)
++        shutil.copy2(launcher, d / 'dmsh_xlate.exe')
++        return d / 'dmsh_xlate.exe' 
+     for f in xlate.parent.iterdir():
+         if f.suffix in ('.dll', '.json'): (d / f.name).symlink_to(f)
+     (d / 'dmsh_xlate').write_text(script); (d / 'dmsh_xlate').chmod(0o755)

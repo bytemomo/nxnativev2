@@ -1,0 +1,12 @@
+[package]
+name = "codecs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Native decoders the nxnative pipeline's Python loads with ctypes where pure Python is too slow (shader_split.py: Yaz0)"
+
+[lib]
+name = "dmcodecs"
+crate-type = ["cdylib"]
+path = "src/lib.rs"

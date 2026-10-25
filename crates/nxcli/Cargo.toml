@@ -1,0 +1,21 @@
+[package]
+name = "nxcli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "nxnative"
+path = "src/main.rs"
+
+[dependencies]
+nxcore.workspace = true
+anyhow.workspace = true
+tokio.workspace = true
+clap = { version = "4", features = ["derive"] }
+futures = "0.3"
+toml = "1"
+
+[features]
+# tests of updates only (never in a release): the client trusts NXNATIVEV2_TEST_PUBLIC_KEY, given at build time, instead of the release key
+test-update-key = ["nxcore/test-update-key"]

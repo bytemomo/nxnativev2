@@ -1,0 +1,115 @@
+# A release the app updates from (crates/xtask/src/release.rs, crates/nxcore/src/update.rs), for a push to main
+# whose commit message has [ci] (or a manual run). The same `cargo xtask release` as on the computer that publishes: it builds only the
+# components whose inputs changed since the latest release (decided here first, by `release --plan`), with two differences:
+#   - the iOS app's Swift object is compiled on a macOS runner, with Xcode's iPhoneOS SDK (the Linux runner has none), only when a bundle is built;
+#   - the release key comes from the repository secret NXNATIVEV2_SIGNING_KEY (just ci-secret), and what the release built is attested
+#     (GitHub's artifact attestations: Sigstore, verifiable with `gh attestation verify`).
+name: release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[ci]')
+    runs-on: ubuntu-24.04
+    outputs:
+      bundles: ${{ steps.plan.outputs.bundles }}
+      client: ${{ steps.plan.outputs.client }}
+      build: ${{ steps.plan.outputs.build }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build tools (xtask links nxcore, whose keyring needs D-Bus)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq pkg-config libdbus-1-dev
+      - name: What changed since the latest release
+        id: plan
+        run: cargo xtask release --plan
+
+  swift:
+    needs: plan
+    if: needs.plan.outputs.bundles != ''
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Xcode with the iOS 26 SDK
+        run: |
+          x=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
+          if [ -n "$x" ]; then sudo xcode-select -s "$x"; fi
+          xcrun --sdk iphoneos --show-sdk-version
+      - name: The Swift object
+        run: cargo xtask swift-object --out dist/swift_DmIOS.o
+      - uses: actions/upload-artifact@v4
+        with:
+          name: swift-object
+          path: dist/swift_DmIOS.o
+          retention-days: 1
+
+  release:
+    needs: [plan, swift]
+    # the Swift job is skipped when no bundle is built: run anyway then
+    if: always() && needs.plan.outputs.build == 'true' && (needs.swift.result == 'success' || needs.swift.result == 'skipped')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write       # the GitHub release
+      id-token: write       # the attestations' Sigstore certificate
+      attestations: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0    # the release's changes: the commits since the previous release's (xtask release changes_since)
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-gnu
+      - name: Build tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential cmake ninja-build mingw-w64 pkg-config python3-pip zstd \
+            libfontconfig1-dev libxkbcommon-dev libdbus-1-dev libudev-dev
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
+      - uses: actions/download-artifact@v5
+        if: needs.plan.outputs.bundles != ''
+        with:
+          name: swift-object
+          path: dist
+      - name: Release
+        env:
+          NXNATIVEV2_SIGNING_KEY: ${{ secrets.NXNATIVEV2_SIGNING_KEY }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          swift=""
+          if [ -f dist/swift_DmIOS.o ]; then swift="--swift-object dist/swift_DmIOS.o"; fi
+          cargo xtask release --publish $swift
+      - name: Attest the Linux bundle's SBOM
+        if: contains(needs.plan.outputs.bundles, 'linux-x64')
+        uses: actions/attest-sbom@v2
+        with:
+          subject-path: dist/release/bundle-linux-x64.tar.zst
+          sbom-path: dist/release/bundle-linux-x64.cdx.json
+      - name: Attest the Windows bundle's SBOM
+        if: contains(needs.plan.outputs.bundles, 'windows-x64')
+        uses: actions/attest-sbom@v2
+        with:
+          subject-path: dist/release/bundle-windows-x64.tar.zst
+          sbom-path: dist/release/bundle-windows-x64.cdx.json
+      - name: Attest the apps' SBOM
+        if: needs.plan.outputs.client == 'true'
+        uses: actions/attest-sbom@v2
+        with:
+          subject-path: dist/release/*-client*
+          sbom-path: dist/release/nxnativev2-client.cdx.json
+      - name: Attest where every file came from
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/release/*

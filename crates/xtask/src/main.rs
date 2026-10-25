@@ -1,0 +1,580 @@
+//! `cargo xtask bundle [--target linux|windows]`: the packaged app, one executable per platform with everything the build needs appended
+//! (see nxcore::bundle). Built on Linux x86_64 for both targets (Windows: cross-compiled with mingw-w64, Windows archives and wheels):
+//!
+//! 1. nxnative: the revision of patches/nxnative/UPSTREAM, with patches/nxnative/common and patches/nxnative/<platform> applied, and runtime/ as dm/rt
+//! 2. Python: python-build-standalone with the pipeline's modules (pip; Windows wheels for Windows)
+//! 3. the .NET runtime, and nx_extract published for it
+//! 4. the iOS app's Swift sources compiled to one arm64 iOS object (swiftc with Xcode's SDK and Swift resources from the data folder)
+//! 5. spirv-cross built from source (static runtime; mingw for Windows)
+//! 6. clang and lld with clang's headers, from LLVM's release
+//! 7. Windows: xcrun.exe and the dotnet dll launcher (crates/launchers): the pipeline runs these by name
+//! 8. DejaVu Sans and DejaVu Sans Bold: the shared-font stand-ins of the iOS app (no system font needed; a system font that covers more languages is taken instead, nxcore::fonts)
+//!
+//! Downloads are cached in target/bundle-cache; the result goes to dist/.
+//!
+//! Also: `cargo xtask keygen` / `cargo xtask release [--publish]` (release.rs: the signed releases the app updates from), and
+//! `cargo xtask swift-object --out <file>` (macOS, CI: step 4 with Xcode's own SDK, for a Linux runner that has none)
+
+use std::fs::{self, File};
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+use anyhow::{Context, Result, bail, ensure};
+
+mod release;
+
+/// The pinned versions, for the SBOM
+pub struct Pins {
+    pub py_release: &'static str,
+    pub py_version: &'static str,
+    pub dotnet: &'static str,
+    pub spirv_cross: &'static str,
+    pub llvm: &'static str,
+}
+pub(crate) const PINS: Pins = Pins { py_release: PY_RELEASE, py_version: PY_VERSION, dotnet: DOTNET_RUNTIME, spirv_cross: SPIRV_CROSS_TAG, llvm: LLVM_VERSION };
+
+const PY_RELEASE: &str = "20261021";
+const PY_VERSION: &str = "3.13.17";
+const PY_MODULES: &[&str] = &["lz4", "capstone", "fonttools", "pillow", "backports.zstd"];
+const DOTNET_RUNTIME: &str = "10.0.13";
+const SPIRV_CROSS_TAG: &str = "vulkan-sdk-1.4.363.0";
+const LLVM_VERSION: &str = "23.1.4";
+const MIN_IOS: &str = "26.0";
+const WIN_RUST_TARGET: &str = "x86_64-pc-windows-gnu";
+/// DejaVu Sans 2.37 (Bitstream Vera / DejaVu license), pinned: the npm package's files, the same bytes as the release's dejavu-fonts-ttf-2.37.tar.bz2.
+/// Noto Sans lacked U+25A1 (□), which The Legend of Zelda: Echoes of Wisdom looks up at startup (it crashed on the null glyph)
+const DEJAVU: &str = "https://cdn.jsdelivr.net/npm/dejavu-fonts-ttf@2.37.3";
+const DEJAVU_SHA256: &[(&str, &str)] = &[
+    ("ttf/DejaVuSans.ttf", "7da195a74c55bef988d0d48f9508bd5d849425c1770dba5d7bfc6ce9ed848954"),
+    ("ttf/DejaVuSans-Bold.ttf", "e6476c1b80502924294eed40894c5b18e06c181444ca953e5334262df9c27724"),
+    ("LICENSE", "7a083b136e64d064794c3419751e5c7dd10d2f64c108fe5ba161eae5e5958a93"),
+];
+
+struct Ctx {
+    root: PathBuf,
+    cache: PathBuf,
+    payload: PathBuf,
+    platform: &'static str,
+    windows: bool,
+    version: u64,
+}
+
+fn main() -> Result<()> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    match args.first().map(String::as_str) {
+        Some("bundle") => bundle(&args[1..]),
+        Some("release") => release::release(&args[1..]),
+        Some("keygen") => release::keygen(),
+        Some("keycheck") => release::keycheck(),
+        Some("swift-object") => swift_object_mac(&args[1..]),
+        _ => bail!(
+            "usage: cargo xtask bundle [--target linux|windows] [--sdk-dir <folder with iPhoneOS*.sdk and swift-resources>] [--swift-object <prebuilt>] [--cli] [--keep] [--release-dir <dir>] [--bundle-version <n>]\n\
+             \x20      cargo xtask release [--publish] [--swift-object <prebuilt>]\n\
+             \x20      cargo xtask keygen | keycheck   (the release key: NXNATIVEV2_SIGNING_KEY, hex or op://vault/item/field)\n\
+             \x20      cargo xtask swift-object --out <file>   (macOS: with Xcode's iPhoneOS SDK)"
+        ),
+    }
+}
+
+fn say(s: impl AsRef<str>) {
+    eprintln!("[xtask] {}", s.as_ref());
+}
+
+fn run(cmd: &mut Command) -> Result<()> {
+    let st = cmd.status().with_context(|| format!("start {cmd:?}"))?;
+    ensure!(st.success(), "{cmd:?} failed ({st})");
+    Ok(())
+}
+
+fn arg<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
+    args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).map(String::as_str)
+}
+
+impl Ctx {
+    pub(crate) fn new(root: &Path, windows: bool, version: u64) -> Self {
+        let name = if windows { "windows-x64" } else { "linux-x64" };
+        Ctx {
+            version,
+            cache: root.join("target/bundle-cache"),
+            payload: root.join(format!("target/bundle/{name}/payload")),
+            platform: if windows { "windows" } else { "linux" },
+            windows,
+            root: root.to_path_buf(),
+        }
+    }
+    /// linux-x64 or windows-x64: the platform's name in assets and manifests
+    pub(crate) fn name(&self) -> &'static str {
+        if self.windows { "windows-x64" } else { "linux-x64" }
+    }
+    pub(crate) fn ext(&self) -> &'static str {
+        if self.windows { ".exe" } else { "" }
+    }
+}
+
+pub(crate) fn sdk_dir(args: &[String]) -> Result<PathBuf> {
+    Ok(match arg(args, "--sdk-dir") {
+        Some(d) => PathBuf::from(d),
+        None => {
+            let s = nxcore::settings::Settings::load()?;
+            nxcore::store::Store::new(s.data_dir()?)?.sdk_dir()
+        }
+    })
+}
+
+/// `cargo xtask bundle`: the packaged app (and with --cli the command line) for one platform, in dist/
+fn bundle(args: &[String]) -> Result<()> {
+    ensure!(cfg!(target_os = "linux") && cfg!(target_arch = "x86_64"), "bundles are built on Linux x86_64 (for Linux and Windows)");
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize()?;
+    let windows = match arg(args, "--target").unwrap_or("linux") {
+        "linux" => false,
+        "windows" => true,
+        t => bail!("unknown target {t}: linux or windows"),
+    };
+    let version = match arg(args, "--bundle-version") { Some(v) => v.parse().context("--bundle-version is a number")?, None => release::bundle_version()? };
+    let ctx = Ctx::new(&root, windows, version);
+    payload(&ctx, arg(args, "--swift-object"), &sdk_dir(args)?)?;
+    let (archive, hash, len) = archive(&ctx)?;
+    for (variant, exe) in clients(&ctx, args.iter().any(|a| a == "--cli"))? {
+        pack(&exe, &archive, len, version, &hash, &root.join(format!("dist/{variant}-{}{}", ctx.name(), ctx.ext())))?;
+    }
+    if !args.iter().any(|a| a == "--keep") {
+        clean(&ctx);
+    }
+    Ok(())
+}
+
+/// The bundle's contents (steps 1-8) in ctx.payload, and its bundle.json
+pub(crate) fn payload(ctx: &Ctx, swift: Option<&str>, sdk_dir: &Path) -> Result<()> {
+    if ctx.payload.exists() {
+        fs::remove_dir_all(&ctx.payload)?;
+    }
+    let _ = fs::remove_file(ctx.payload.with_extension("tar.zst"));
+    fs::create_dir_all(&ctx.payload)?;
+    fs::create_dir_all(&ctx.cache)?;
+    nxnative(ctx)?;
+    python(ctx)?;
+    dotnet(ctx)?;
+    match swift {
+        // CI: compiled on a macOS runner with Xcode's SDK (swift-object)
+        Some(pre) => {
+            let out = ctx.payload.join("prebuilt/swift_DmIOS.o");
+            fs::create_dir_all(out.parent().unwrap())?;
+            fs::copy(pre, &out).with_context(|| format!("the prebuilt Swift object {pre}"))?;
+            say(format!("Swift object: {pre} (prebuilt)"));
+        }
+        None => swift_object(ctx, sdk_dir)?,
+    }
+    spirv_cross(ctx)?;
+    llvm(ctx)?;
+    if ctx.windows {
+        launchers(ctx)?;
+    }
+    codecs(ctx)?;
+    fonts(ctx)?;
+    shrink(ctx)?;
+    // what the bundle is (nxcore::bundle::Info): its version decides which bundle is active, its API which apps run it
+    let rev = fs::read_to_string(ctx.payload.join("nxnative/.nxnativev2-revision")).unwrap_or_default();
+    let info = serde_json::json!({"version": ctx.version, "platform": ctx.name(), "nxnative": rev.trim(), "api": nxcore::update::BUNDLE_API});
+    fs::write(ctx.payload.join(nxcore::bundle::INFO), serde_json::to_vec_pretty(&info)?)?;
+    Ok(())
+}
+
+/// The payload as one zstd tar: (the archive, its folder name: the first 8 bytes of its SHA-256 in hex, its length)
+pub(crate) fn archive(ctx: &Ctx) -> Result<(PathBuf, String, u64)> {
+    let archive = ctx.payload.with_extension("tar.zst");
+    if !archive.is_file() {
+        say("packing the payload (tar + zstd)");
+        let mut enc = zstd::stream::write::Encoder::new(File::create(&archive)?, 19)?;
+        enc.multithread(std::thread::available_parallelism().map_or(4, |n| n.get() as u32))?;
+        let mut tar = tar::Builder::new(enc);
+        tar.follow_symlinks(false);
+        tar.mode(tar::HeaderMode::Deterministic);
+        tar.append_dir_all(".", &ctx.payload)?;
+        tar.into_inner()?.finish()?.sync_all()?;
+    }
+    let sha = release::sha256_file(&archive)?;
+    Ok((archive.clone(), sha[..16].to_string(), fs::metadata(&archive)?.len()))
+}
+
+/// The app (and with `cli` the command line) for the target, stamped with the release number: [(variant, executable)]
+pub(crate) fn clients(ctx: &Ctx, cli: bool) -> Result<Vec<(&'static str, PathBuf)>> {
+    say("building the app (profile dist: no debug info, stripped)");
+    let mut v = vec![("nxnativev2", app(ctx, "nxapp", "nxnativev2")?.0)];
+    if cli {
+        // the command-line front end (testing, scripting, `nxnative update`)
+        v.push(("nxnative-cli", app(ctx, "nxcli", "nxnative")?.0));
+    }
+    Ok(v)
+}
+
+pub(crate) fn clean(ctx: &Ctx) {
+    let _ = fs::remove_dir_all(ctx.payload.parent().unwrap());
+}
+
+/// Builds a package of the workspace for the target; returns the executable and the file extension of the output
+fn app(ctx: &Ctx, package: &str, bin: &str) -> Result<(PathBuf, &'static str)> {
+    let mut cmd = Command::new("cargo");
+    // the release number the client reports (nxcore::update::release_number): its version is <major>.<number>
+    cmd.args(["build", "--profile", "dist", "-p", package]).current_dir(&ctx.root).env("NXNATIVEV2_RELEASE", ctx.version.to_string());
+    if ctx.windows {
+        cmd.args(["--target", WIN_RUST_TARGET]);
+        run(&mut cmd)?;
+        return Ok((ctx.root.join(format!("target/{WIN_RUST_TARGET}/dist/{bin}.exe")), ".exe"));
+    }
+    run(&mut cmd)?;
+    Ok((ctx.root.join(format!("target/dist/{bin}")), ""))
+}
+
+/// Downloads `url` into the cache (once) and returns its path
+fn fetch(ctx: &Ctx, url: &str, name: &str) -> Result<PathBuf> {
+    let p = ctx.cache.join(name);
+    if p.is_file() {
+        return Ok(p);
+    }
+    say(format!("downloading {url}"));
+    let client = reqwest::blocking::Client::builder().user_agent("nxnativev2-xtask").timeout(None).build()?;
+    let mut res = client.get(url).send()?.error_for_status()?;
+    let tmp = p.with_extension("partial");
+    let mut f = File::create(&tmp)?;
+    std::io::copy(&mut res, &mut f)?;
+    f.sync_all()?;
+    fs::rename(&tmp, &p)?;
+    Ok(p)
+}
+
+/// Unpacks a .zip into `out`, dropping `strip` leading components
+fn unzip(archive: &Path, out: &Path, strip: usize) -> Result<()> {
+    let mut z = zip::ZipArchive::new(File::open(archive)?)?;
+    for i in 0..z.len() {
+        let mut e = z.by_index(i)?;
+        let Some(rel) = e.enclosed_name() else { continue };
+        let rel: PathBuf = rel.components().skip(strip).collect();
+        if rel.as_os_str().is_empty() {
+            continue;
+        }
+        let dst = out.join(rel);
+        if e.is_dir() {
+            fs::create_dir_all(&dst)?;
+        } else {
+            fs::create_dir_all(dst.parent().unwrap())?;
+            std::io::copy(&mut e, &mut File::create(&dst)?)?;
+        }
+    }
+    Ok(())
+}
+
+fn python(ctx: &Ctx) -> Result<()> {
+    let triple = if ctx.windows { "x86_64-pc-windows-msvc" } else { "x86_64-unknown-linux-gnu" };
+    // the stripped variant: binutils' strip breaks these binaries (python3 then fails with "symbol lookup error")
+    let name = format!("cpython-{PY_VERSION}+{PY_RELEASE}-{triple}-install_only_stripped.tar.gz");
+    let url = format!("https://github.com/astral-sh/python-build-standalone/releases/download/{PY_RELEASE}/{name}");
+    let tarball = fetch(ctx, &url, &name)?;
+    let out = ctx.payload.join("python");
+    say(format!("Python {PY_VERSION} ({}) with {}", ctx.platform, PY_MODULES.join(" ")));
+    untar(&tarball, &out, 1, &|_| true)?;
+    if ctx.windows {
+        // Windows wheels, installed by this computer's pip into the Windows Python's site-packages
+        run(Command::new("python3")
+            .args(["-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--quiet", "--no-compile", "--only-binary=:all:", "--platform", "win_amd64"])
+            .args(["--python-version", "3.13", "--implementation", "cp", "--target"])
+            .arg(out.join("Lib/site-packages"))
+            .args(PY_MODULES))?;
+    } else {
+        run(Command::new(out.join("bin/python3")).args(["-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--quiet", "--no-compile"]).args(PY_MODULES))?;
+    }
+    Ok(())
+}
+
+fn dotnet(ctx: &Ctx) -> Result<()> {
+    let (rid, ext) = if ctx.windows { ("win-x64", "zip") } else { ("linux-x64", "tar.gz") };
+    let name = format!("dotnet-runtime-{DOTNET_RUNTIME}-{rid}.{ext}");
+    let archive = fetch(ctx, &format!("https://builds.dotnet.microsoft.com/dotnet/Runtime/{DOTNET_RUNTIME}/{name}"), &name)?;
+    say(format!(".NET runtime {DOTNET_RUNTIME} ({rid})"));
+    if ctx.windows { unzip(&archive, &ctx.payload.join("dotnet"), 0)? } else { untar(&archive, &ctx.payload.join("dotnet"), 0, &|_| true)? }
+    // nx_extract for that runtime (framework-dependent), with the build host's .NET SDK
+    say(format!("nx_extract (dotnet publish -r {rid})"));
+    let out = ctx.payload.join("prebuilt/nx_extract");
+    run(Command::new("dotnet")
+        .args(["publish", "-c", "Release", "-r", rid, "--self-contained", "false", "-v", "quiet", "-nologo", "-o"])
+        .arg(&out)
+        .arg(ctx.payload.join("nxnative/dm/tools/nx_extract"))
+        .env("DOTNET_CLI_TELEMETRY_OPTOUT", "1"))?;
+    ensure!(out.join(if ctx.windows { "nx_extract.exe" } else { "nx_extract" }).is_file(), "dotnet publish made no nx_extract");
+    // the publish leaves bin/obj in the checkout
+    for d in ["bin", "obj"] {
+        let _ = fs::remove_dir_all(ctx.payload.join("nxnative/dm/tools/nx_extract").join(d));
+    }
+    Ok(())
+}
+
+fn spirv_cross(ctx: &Ctx) -> Result<()> {
+    let src = ctx.cache.join(format!("SPIRV-Cross-{SPIRV_CROSS_TAG}"));
+    if !src.join("CMakeLists.txt").is_file() {
+        say(format!("cloning SPIRV-Cross {SPIRV_CROSS_TAG}"));
+        let _ = fs::remove_dir_all(&src);
+        run(Command::new("git").args(["clone", "-q", "--depth", "1", "-b", SPIRV_CROSS_TAG, "https://github.com/KhronosGroup/SPIRV-Cross.git"]).arg(&src))?;
+    }
+    let build = src.join(if ctx.windows { "build-mingw" } else { "build-static" });
+    let bin = build.join(if ctx.windows { "spirv-cross.exe" } else { "spirv-cross" });
+    if !bin.is_file() {
+        say(format!("building spirv-cross ({})", ctx.platform));
+        let mut cmake = Command::new("cmake");
+        cmake.arg("-S").arg(&src).arg("-B").arg(&build);
+        cmake.args(["-G", "Ninja", "-DCMAKE_BUILD_TYPE=Release", "-DSPIRV_CROSS_SHARED=OFF", "-DSPIRV_CROSS_STATIC=ON", "-DSPIRV_CROSS_ENABLE_TESTS=OFF", "-DSPIRV_CROSS_CLI=ON"]);
+        if ctx.windows {
+            cmake.args(["-DCMAKE_SYSTEM_NAME=Windows", "-DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc", "-DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++", "-DCMAKE_EXE_LINKER_FLAGS=-static"]);
+        } else {
+            cmake.arg("-DCMAKE_EXE_LINKER_FLAGS=-static-libstdc++ -static-libgcc");
+        }
+        run(&mut cmake)?;
+        run(Command::new("cmake").arg("--build").arg(&build).args(["--target", "spirv-cross"]))?;
+    }
+    let dst = ctx.payload.join("bin").join(bin.file_name().unwrap());
+    fs::create_dir_all(dst.parent().unwrap())?;
+    fs::copy(&bin, &dst)?;
+    say("spirv-cross");
+    Ok(())
+}
+
+fn llvm(ctx: &Ctx) -> Result<()> {
+    let name = if ctx.windows { format!("clang+llvm-{LLVM_VERSION}-x86_64-pc-windows-msvc.tar.zst") } else { format!("LLVM-{LLVM_VERSION}-Linux-X64.tar.zst") };
+    let tarball = fetch(ctx, &format!("https://github.com/llvm/llvm-project/releases/download/llvmorg-{LLVM_VERSION}/{name}"), &name)?;
+    let major = LLVM_VERSION.split('.').next().unwrap();
+    say(format!("clang and lld {LLVM_VERSION} (of LLVM's release, {})", ctx.platform));
+    let out = ctx.payload.join("llvm");
+    let keep_bin: Vec<String> = if ctx.windows {
+        vec!["bin/clang.exe".into(), "bin/ld64.lld.exe".into()]
+    } else {
+        vec![format!("bin/clang-{major}"), "bin/clang".into(), "bin/lld".into(), "bin/ld64.lld".into()]
+    };
+    let headers = format!("lib/clang/{major}/include");
+    untar(&tarball, &out, 1, &|p: &Path| {
+        let s = p.to_string_lossy().replace('\\', "/");
+        keep_bin.iter().any(|k| s == *k) || s == format!("lib/clang/{major}") || s == "lib/clang" || s == "lib" || s == "bin" || s.starts_with(&headers)
+    })?;
+    let (clang, ld) = if ctx.windows { ("bin/clang.exe", "bin/ld64.lld.exe") } else { ("bin/clang", "bin/ld64.lld") };
+    ensure!(out.join(clang).exists() && out.join(ld).exists(), "the LLVM release had no clang / ld64.lld");
+    Ok(())
+}
+
+/// The fonts the iOS app gets for the Switch's shared fonts (build_ipa: STD_FONT, LETTER_FONT): the bundle's own, as a system
+/// may have none of the ones the scripts look for (that stopped builds: "copy standard font")
+fn fonts(ctx: &Ctx) -> Result<()> {
+    say("fonts: DejaVu Sans");
+    let out = ctx.payload.join("fonts");
+    fs::create_dir_all(&out)?;
+    for (path, sha) in DEJAVU_SHA256 {
+        let name = path.rsplit('/').next().unwrap();
+        let p = fetch(ctx, &format!("{DEJAVU}/{path}"), &format!("dejavu-2.37-{name}"))?;
+        let got: String = <sha2::Sha256 as sha2::Digest>::digest(fs::read(&p)?).iter().map(|b| format!("{b:02x}")).collect();
+        ensure!(got == *sha, "{name}: sha256 {got}, expected {sha}");
+        fs::copy(&p, out.join(if name == "LICENSE" { "DejaVu-LICENSE.txt" } else { name }))?;
+    }
+    Ok(())
+}
+
+/// The native decoders the pipeline's Python loads (crates/codecs: Yaz0 for shader_split.py), in lib/ (nxcore::bundle sets DM_CODECS)
+fn codecs(ctx: &Ctx) -> Result<()> {
+    say("codecs (dmcodecs: Yaz0)");
+    let mut c = Command::new("cargo");
+    c.args(["build", "--profile", "dist", "-p", "codecs"]).current_dir(&ctx.root);
+    if ctx.windows {
+        c.args(["--target", WIN_RUST_TARGET]);
+    }
+    run(&mut c)?;
+    let (dir, file) = if ctx.windows { (format!("target/{WIN_RUST_TARGET}/dist"), nxcore::bundle::CODECS_WINDOWS) } else { ("target/dist".to_string(), nxcore::bundle::CODECS_UNIX) };
+    fs::create_dir_all(ctx.payload.join("lib"))?;
+    fs::copy(ctx.root.join(dir).join(file), ctx.payload.join("lib").join(file))?;
+    Ok(())
+}
+
+/// Windows: the executables the pipeline runs by name (crates/launchers)
+fn launchers(ctx: &Ctx) -> Result<()> {
+    say("launchers (xcrun.exe, which.exe, dotnet-dll-launcher.exe)");
+    run(Command::new("cargo").args(["build", "--profile", "dist", "-p", "launchers", "--target", WIN_RUST_TARGET]).current_dir(&ctx.root))?;
+    let from = ctx.root.join(format!("target/{WIN_RUST_TARGET}/dist"));
+    for exe in ["xcrun.exe", "which.exe", "dotnet-dll-launcher.exe"] {
+        fs::copy(from.join(exe), ctx.payload.join("bin").join(exe))?;
+    }
+    Ok(())
+}
+
+fn untar(archive: &Path, out: &Path, strip: usize, keep: &dyn Fn(&Path) -> bool) -> Result<()> {
+    let f = File::open(archive)?;
+    let reader: Box<dyn Read> = if archive.to_string_lossy().ends_with(".zst") {
+        // LLVM's archives use zstd's long window (up to 2 GB)
+        let mut d = zstd::stream::read::Decoder::new(f)?;
+        d.window_log_max(31)?;
+        Box::new(d)
+    } else {
+        Box::new(flate2::read::GzDecoder::new(f))
+    };
+    let mut ar = tar::Archive::new(reader);
+    ar.set_preserve_permissions(true);
+    fs::create_dir_all(out)?;
+    for e in ar.entries()? {
+        let mut e = e?;
+        if e.header().entry_type().is_pax_global_extensions() {
+            continue;
+        }
+        let p = e.path()?.into_owned();
+        // "./dotnet" and "dotnet" alike
+        let rel: PathBuf = p.components().filter(|c| !matches!(c, std::path::Component::CurDir)).skip(strip).collect();
+        if rel.as_os_str().is_empty() || !keep(&rel) {
+            continue;
+        }
+        let dst = out.join(&rel);
+        if let Some(parent) = dst.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        e.unpack(&dst)?;
+    }
+    Ok(())
+}
+fn upstream(ctx: &Ctx, key: &str) -> Result<String> {
+    let s = fs::read_to_string(ctx.root.join("patches/nxnative/UPSTREAM"))?;
+    s.lines().find_map(|l| l.strip_prefix(key).and_then(|r| r.strip_prefix('\t'))).map(|v| v.trim().to_string()).with_context(|| format!("no {key} in UPSTREAM"))
+}
+fn nxnative(ctx: &Ctx) -> Result<()> {
+    let (repo, rev) = (upstream(ctx, "repo")?, upstream(ctx, "rev")?);
+    let tarball = fetch(ctx, &format!("{repo}/archive/{rev}.tar.gz"), &format!("nxnative-{rev}.tar.gz"))?;
+    let out = ctx.payload.join("nxnative");
+    say(format!("nxnative {} at {}", repo, &rev[..12]));
+    untar(&tarball, &out, 1, &|_| true)?;
+    for dir in ["common", ctx.platform] {
+        let d = ctx.root.join("patches/nxnative").join(dir);
+        let mut patches: Vec<PathBuf> = fs::read_dir(&d).map(|rd| rd.filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "patch")).collect()).unwrap_or_default();
+        patches.sort();
+        for p in patches {
+            say(format!("applying {}", p.strip_prefix(&ctx.root).unwrap_or(&p).display()));
+            nxcore::patch::apply(&out, &fs::read_to_string(&p)?).with_context(|| format!("{} does not apply", p.display()))?;
+        }
+    }
+    // nxnativev2's runtime (runtime/: local play), readable source kept here, goes in as dm/rt; the common patch builds it into the host
+    copy_tree(&ctx.root.join("runtime"), &out.join("dm/rt"))?;
+    say("runtime: runtime/ → nxnative/dm/rt".to_string());
+    fs::write(out.join(".nxnativev2-revision"), format!("{repo}\t{rev}\n"))?;
+    Ok(())
+}
+fn copy_tree(from: &Path, to: &Path) -> Result<()> {
+    fs::create_dir_all(to)?;
+    for e in fs::read_dir(from)? {
+        let e = e?;
+        let (src, dst) = (e.path(), to.join(e.file_name()));
+        if e.file_type()?.is_dir() { copy_tree(&src, &dst)?; } else { fs::copy(&src, &dst)?; }
+    }
+    Ok(())
+}
+fn swift_object(ctx: &Ctx, sdk_dir: &Path) -> Result<()> {
+    let sources = ctx.payload.join("nxnative/dm/ios/Sources");
+    let mut files: Vec<PathBuf> = fs::read_dir(&sources)?.filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "swift")).collect();
+    if files.is_empty() {
+        return Ok(());
+    }
+    files.sort();
+    let sdk = fs::read_dir(sdk_dir)
+        .with_context(|| format!("no SDK folder {} (extract Xcode.xip with the app or `nxnative sdk` first, or pass --sdk-dir)", sdk_dir.display()))?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.file_name().unwrap_or_default().to_string_lossy().starts_with("iPhoneOS") && p.join("SDKSettings.json").is_file())
+        .max()
+        .context("no iPhoneOS SDK in the SDK folder")?;
+    let res = sdk_dir.join("swift-resources");
+    ensure!(res.join("iphoneos").is_dir(), "no Swift resources in {}", res.display());
+    say(format!("Swift sources → arm64 iOS object ({})", files.iter().map(|f| f.file_name().unwrap().to_string_lossy()).collect::<Vec<_>>().join(", ")));
+    let out = ctx.payload.join("prebuilt/swift_DmIOS.o");
+    fs::create_dir_all(out.parent().unwrap())?;
+    // the same command as dm/ios/tools/build_app_linux.py compile_swift
+    run(Command::new("swiftc")
+        .args(["-target", &format!("arm64-apple-ios{MIN_IOS}"), "-sdk"])
+        .arg(&sdk)
+        .arg("-resource-dir")
+        .arg(&res)
+        .args(["-Xfrontend", "-enable-cross-import-overlays", "-parse-as-library", "-module-name", "DmIOS", "-O", "-wmo", "-c"])
+        .args(&files)
+        .arg("-o")
+        .arg(&out))?;
+    Ok(())
+}
+/// macOS (CI): step 4 alone, with Xcode's iPhoneOS SDK: the patched nxnative's Swift sources → one arm64 iOS object at `--out`, which a Linux
+/// runner's `bundle --swift-object` takes (no platform patch touches the Swift sources: one object serves both bundles)
+fn swift_object_mac(args: &[String]) -> Result<()> {
+    ensure!(cfg!(target_os = "macos"), "swift-object runs on macOS, with Xcode's SDK (on Linux, bundle compiles it with the data folder's SDK)");
+    let out = PathBuf::from(arg(args, "--out").context("swift-object --out <file>")?);
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize()?;
+    let ctx = Ctx { cache: root.join("target/bundle-cache"), payload: root.join("target/bundle/swift/payload"), platform: "linux", windows: false, version: 0, root: root.clone() };
+    if ctx.payload.exists() {
+        fs::remove_dir_all(&ctx.payload)?;
+    }
+    fs::create_dir_all(&ctx.payload)?;
+    fs::create_dir_all(&ctx.cache)?;
+    nxnative(&ctx)?;
+    let sources = ctx.payload.join("nxnative/dm/ios/Sources");
+    let mut files: Vec<PathBuf> = fs::read_dir(&sources)?.filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "swift")).collect();
+    files.sort();
+    ensure!(!files.is_empty(), "no Swift sources in {}", sources.display());
+    if let Some(d) = out.parent() {
+        fs::create_dir_all(d)?;
+    }
+    say(format!("Swift sources → arm64 iOS object with Xcode's SDK ({} files)", files.len()));
+    run(Command::new("xcrun")
+        .args(["-sdk", "iphoneos", "swiftc", "-target", &format!("arm64-apple-ios{MIN_IOS}")])
+        .args(["-Xfrontend", "-enable-cross-import-overlays", "-parse-as-library", "-module-name", "DmIOS", "-O", "-wmo", "-c"])
+        .args(&files)
+        .arg("-o")
+        .arg(&out))?;
+    say(format!("{} ({} bytes)", out.display(), fs::metadata(&out)?.len()));
+    Ok(())
+}
+fn shrink(ctx: &Ctx) -> Result<()> {
+    let py = ctx.payload.join("python");
+    let lib = if ctx.windows { "Lib" } else { "lib/python3.13" };
+    for rel in ["idlelib", "tkinter", "turtledemo", "ensurepip", "site-packages/pip"] {
+        let _ = fs::remove_dir_all(py.join(lib).join(rel));
+    }
+    for rel in ["share", "include", "tcl"] {
+        let _ = fs::remove_dir_all(py.join(rel));
+    }
+    for e in fs::read_dir(py.join(if ctx.windows { "DLLs" } else { "lib" }))?.filter_map(|e| e.ok()) {
+        let n = e.file_name().to_string_lossy().into_owned();
+        if n.starts_with("tcl") || n.starts_with("tk") || n.starts_with("itcl") || n.starts_with("thread") || n.starts_with("_tkinter") {
+            let _ = if e.path().is_dir() { fs::remove_dir_all(e.path()) } else { fs::remove_file(e.path()) };
+        }
+    }
+    // bytecode caches (rebuilt on demand); binaries are left as they are: Python comes stripped, LLVM's release nearly so, and binutils'
+    // strip broke python-build-standalone's interpreter
+    let mut stack = vec![ctx.payload.clone()];
+    while let Some(d) = stack.pop() {
+        for e in fs::read_dir(&d)?.filter_map(|e| e.ok()) {
+            let p = e.path();
+            if e.file_type()?.is_dir() {
+                if p.file_name().is_some_and(|n| n == "__pycache__") {
+                    fs::remove_dir_all(&p)?;
+                } else {
+                    stack.push(p);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+/// An executable with a bundle archive appended (nxcore::bundle's layout): the packaged app
+pub(crate) fn pack(exe: &Path, archive: &Path, len: u64, version: u64, hash: &str, out: &Path) -> Result<()> {
+    ensure!(hash.len() == 16, "the payload's hash is 16 hex digits");
+    // written beside and renamed over the old one: a running copy keeps its file (copying into it fails with "Text file busy")
+    fs::create_dir_all(out.parent().unwrap())?;
+    let part = out.with_extension("partial");
+    fs::copy(exe, &part)?;
+    let mut o = fs::OpenOptions::new().append(true).open(&part)?;
+    std::io::copy(&mut File::open(archive)?, &mut o)?;
+    o.write_all(&len.to_le_bytes())?;
+    o.write_all(&version.to_le_bytes())?;   // the trailer with the bundle's version (nxcore::bundle MAGIC2)
+    o.write_all(hash.as_bytes())?;
+    o.write_all(nxcore::bundle::MAGIC2)?;
+    o.sync_all()?;
+    drop(o);
+    fs::rename(&part, out)?;
+    say(format!("{} ({:.0} MB, payload {:.0} MB, bundle {hash})", out.display(), fs::metadata(out)?.len() as f64 / 1e6, len as f64 / 1e6));
+    Ok(())
+}
