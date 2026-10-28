@@ -375,7 +375,7 @@ index 8ac5274..20f1671 100644
          high = -1
          for index in set(reads):
 diff --git a/dm/gfx/tools/dmsh_build.py b/dm/gfx/tools/dmsh_build.py
-index a71fd8b..e012d40 100644
+index a71fd8b..d5ff8c0 100644
 --- a/dm/gfx/tools/dmsh_build.py
 +++ b/dm/gfx/tools/dmsh_build.py
 @@ -8,7 +8,8 @@
@@ -523,7 +523,7 @@ index a71fd8b..e012d40 100644
  
  BF_STATS = collections.Counter()
  
-@@ -182,24 +193,15 @@ def bf_digest(msl, key):
+@@ -182,28 +193,19 @@ def bf_digest(msl, key):
      h.update(b'\0bf-want\0' + (b'1' if key in BF_WANT else b'0'))
      return h.hexdigest()
  
@@ -552,8 +552,14 @@ index a71fd8b..e012d40 100644
 -    atomic_json(os.path.join(root, 'fetch.json'), fmeta)
 +def bf_cache_publish(digest, fmsl): STORE.set('variant', digest, {'metal': STORE.put_file(fmsl)})
  
- def write_refl(key, refl):
+-def write_refl(key, refl):
++def write_refl(key, refl):   # out's reflection is written without Mac libraries too (off a Mac): it names the Mac convention, with no compiler to record
      for target, d in (('mac', out),) + ((('ios', IOSOUT),) if IOSOUT else ()):
+-        atomic_json(os.path.join(d, key + '_b.json'), MTL.with_compiler(target, refl))
++        atomic_json(os.path.join(d, key + '_b.json'), MTL.with_compiler(target, refl) if target in MTL.targets else dict(refl, chain_metal=MAC_RECORD))
+ 
+ def fetch_finish(key, src, refl):
+     if refl['stage'] != 'ps': return refl
 @@ -224,21 +226,14 @@ def fetch_finish(key, src, refl):
              if not bf_cache_restore(key, digest, fmeta, fmsl):
                  BF_STATS['miss'] += 1
@@ -3211,9 +3217,18 @@ index de8d980..cd41389 100644
  
  The size of the 3D picture, from 50 to 100 %. Below 100 % the size is fixed there and the game's own dynamic resolution is off; 100 % keeps the game's own. Lower can be lighter on the GPU but is blurrier; the HUD and text keep their sharpness. Only games the app can scale offer it.
 diff --git a/scripts/build_ipa_from_nsp.py b/scripts/build_ipa_from_nsp.py
-index 8b67465..c6bb365 100755
+index 8b67465..5d5dc47 100755
 --- a/scripts/build_ipa_from_nsp.py
 +++ b/scripts/build_ipa_from_nsp.py
+@@ -29,7 +29,7 @@
+ # unless ALLOW_OTHER_METAL / --allow-other-metal. Issue #242 reported corruption with another compiler; the cause is still unconfirmed.
+ # Python 3.12+ is required for bounded archive mappings inside images. The Python running this file needs lz4, capstone and fonttools (and backports.zstd before Python 3.14); also needed: Xcode, xcodegen, .NET SDK 10, zstd. SPIRV-Cross is the in-repo build. A first run takes 2 (Metroid Dread) to 10 minutes (Breath of the Wild: 5 of them the shader split), longer when shader libraries must be compiled; a repeat run with unchanged inputs takes about 20 s (Metroid Dread), mostly packing the IPA. Key values are never printed.
+ # The console shows one line per stage ([k/n] stage, with a bar, done/total, percent, elapsed time and ETA where the work can be counted); the tools' own output goes only to logs/ (PROGRESS / --progress). --progress json writes newline-delimited JSON events to stdout.
+-import ast, collections, ctypes, getpass, hashlib, importlib.util, json, os, re, shlex, shutil, struct, subprocess, sys, tempfile, threading, time, types
++import ast, collections, ctypes, getpass, hashlib, importlib.util, json, os, platform, re, shlex, shutil, struct, subprocess, sys, tempfile, threading, time, types
+ from pathlib import Path
+ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "dm/tools"))
+ import romfs as rfs
 @@ -371,6 +371,10 @@ def rmtree(p):
  def build_nx_extract(repo, work, logs, env):
      """Build nx_extract into <work>/tools/nx_extract/. It is built in a temporary folder and copied over: with an apostrophe in the output path (e.g. "Bowser's Fury") MSBuild's conditions break,
@@ -3233,7 +3248,7 @@ index 8b67465..c6bb365 100755
      a, b = d / '.clone_test', d / '.clone_test2'
      try:
          a.write_bytes(b'x'); rmtree(b)
-@@ -860,21 +865,48 @@ def profile_files(g):   # every file of the game profile (game.tsv and its table
+@@ -860,21 +865,80 @@ def profile_files(g):   # every file of the game profile (game.tsv and its table
      return sorted(p for p in g.dir.iterdir() if p.is_file() and p.name not in out)
  
  
@@ -3262,18 +3277,50 @@ index 8b67465..c6bb365 100755
      if not shutil.which(sc, path=env.get('PATH')): raise BuildError(f'spirv-cross is missing or not executable: {sc}')
  
  
++def il_for_host(dll):
++    """The dll's bytes marked for this machine when it is IL only (no ReadyToRun code) but marked for another one, else None (it loads as it is): the translator is
++    built on the Mac for osx-arm64, which marks the dll arm64, and an x64 dotnet refuses to load it although its code runs anywhere"""
++    host = {'x86_64': 0x8664, 'amd64': 0x8664, 'aarch64': 0xaa64, 'arm64': 0xaa64}.get(platform.machine().lower())
++    b = bytearray(dll.read_bytes())
++    try:
++        pe = struct.unpack_from('<I', b, 0x3c)[0]; machine = struct.unpack_from('<H', b, pe + 4)[0]
++        if host is None or machine in (0x14c, host): return None   # 0x14c: AnyCPU
++        nsec, opt = struct.unpack_from('<H', b, pe + 6)[0], struct.unpack_from('<H', b, pe + 20)[0]
++        oh = pe + 24; dirs = oh + (112 if struct.unpack_from('<H', b, oh)[0] == 0x20b else 96)
++        cli = struct.unpack_from('<I', b, dirs + 14 * 8)[0]
++        for i in range(nsec):
++            vsize, va, rsize, raw = struct.unpack_from('<IIII', b, oh + opt + i * 40 + 8)
++            if va <= cli < va + max(vsize, rsize): cli += raw - va; break
++        else: return None
++        if not struct.unpack_from('<I', b, cli + 16)[0] & 1 or any(struct.unpack_from('<II', b, cli + 64)): return None   # not ILONLY, or ReadyToRun code
++    except struct.error: return None
++    struct.pack_into('<H', b, pe + 4, host)
++    return bytes(b)
++
++
 +def xlate_launcher(xlate, d):
 +    """The translator as dmsh_build.py and dmsh_chain.py run it: the in-repo launcher on macOS; elsewhere it is a macOS executable, so d gets a dmsh_xlate script that runs
-+    the in-repo dll with dotnet, beside links to the dlls the chain fingerprints (dmsh_chain.py reads them from the launcher's folder).
++    the in-repo dll with dotnet, beside links to the dlls the chain fingerprints (dmsh_chain.py reads them from the launcher's folder). A dll marked for another machine
++    runs from d/run, as marked for this one (il_for_host): the chain still fingerprints the in-repo one, with the same code.
 +    A folder already as it would be made is kept: the times of its files are part of the iOS shaders' key ('stat'), which a new folder would change on every build"""
 +    if sys.platform == 'darwin': return xlate
-+    script = f'#!/bin/sh\nexec dotnet {shlex.quote(str(xlate.parent / "dmsh_xlate.dll"))} "$@"\n'
++    own = il_for_host(xlate.parent / 'dmsh_xlate.dll')
++    script = f'#!/bin/sh\nexec dotnet {shlex.quote(str((d / "run" if own else xlate.parent) / "dmsh_xlate.dll"))} "$@"\n'
 +    links = {f.name: str(f) for f in xlate.parent.iterdir() if f.suffix in ('.dll', '.json')}
++    run_links = {n: t for n, t in links.items() if n != 'dmsh_xlate.dll'}
 +    try:
-+        if (sys.platform != 'win32' and sorted(os.listdir(d)) == sorted([*links, 'dmsh_xlate']) and all(os.readlink(d / n) == t for n, t in links.items())
-+                and (d / 'dmsh_xlate').read_text() == script): return d / 'dmsh_xlate'
++        if (sys.platform != 'win32' and sorted(os.listdir(d)) == sorted([*links, 'dmsh_xlate', *(['run'] if own else [])]) and all(os.readlink(d / n) == t for n, t in links.items())
++                and (d / 'dmsh_xlate').read_text() == script
++                and (not own or (sorted(os.listdir(d / 'run')) == sorted([*run_links, 'dmsh_xlate.dll']) and all(os.readlink(d / 'run' / n) == t for n, t in run_links.items())
++                                 and (d / 'run/dmsh_xlate.dll').read_bytes() == own))): return d / 'dmsh_xlate'
 +    except OSError: pass
 +    rmtree(d); d.mkdir(parents=True)
++    if own:
++        (d / 'run').mkdir()
++        for n, t in run_links.items():
++            if sys.platform == 'win32': shutil.copy2(t, d / 'run' / n)
++            else: (d / 'run' / n).symlink_to(t)
++        (d / 'run/dmsh_xlate.dll').write_bytes(own)
 +    for f in xlate.parent.iterdir():
 +        if f.suffix in ('.dll', '.json'): (d / f.name).symlink_to(f)
 +    (d / 'dmsh_xlate').write_text(script); (d / 'dmsh_xlate').chmod(0o755)
@@ -3283,7 +3330,7 @@ index 8b67465..c6bb365 100755
  def _importable(m):
      try: __import__(m); return True
      except ImportError: return False
-@@ -1050,18 +1082,19 @@ def glslc_done(d):   # capture files written whole: a GLSLC output (magic 0x1986
+@@ -1050,18 +1114,19 @@ def glslc_done(d):   # capture files written whole: a GLSLC output (magic 0x1986
      return out
  
  
@@ -3306,7 +3353,7 @@ index 8b67465..c6bb365 100755
      host = repo / 'dm/host'
      run(['make', '-s', f'GAME={g.id}', f'gen/{g.id}/game_profile.h', 'gen/vpx/libvpx.a'], logs / 'mac_host_make.log', env=env, cwd=host)
      dry = subprocess.run(['make', '-n', '-B', f'GAME={g.id}', 'dmhost'], env=env, cwd=host, capture_output=True, text=True)
-@@ -1640,9 +1673,17 @@ class ShaderWatch:
+@@ -1640,9 +1705,17 @@ class ShaderWatch:
  
      def __call__(self):
          if not self.w:   # dmsh_build.py's temporary folder: the dmsh_* under WORK made since it started
@@ -3325,7 +3372,7 @@ index 8b67465..c6bb365 100755
          if self.t1 is None:
              self.hits |= self.written(self.pos.keys() - self.hits, self.t0 - 2)
              if len(self.hits) + ext['.bin'] < self.n and not ext['.spv'] and not ext['.metal']:
-@@ -1663,6 +1704,8 @@ def spirv_cross(repo, env=None):   # resolve the same selection the shader tools
+@@ -1663,6 +1736,8 @@ def spirv_cross(repo, env=None):   # resolve the same selection the shader tools
  
  
  def toolchain(repo, env=None):   # Metal is a separate Xcode download: its version and SDK must invalidate reuse too
@@ -3334,7 +3381,7 @@ index 8b67465..c6bb365 100755
      return (('cmd', ['xcodebuild', '-version']), ('files', [spirv_cross(repo, env)]),
              *(('cmd', ['xcrun', '-sdk', sdk, *args]) for sdk in ('macosx', 'iphoneos')
                for args in (['metal', '--version'], ['metallib', '--version'], ['--show-sdk-version'], ['--show-sdk-build-version'])))
-@@ -1684,7 +1727,7 @@ def build_shaders(py, repo, sh, xlate, env, logs, g, pkg_key=None, mac=False):
+@@ -1684,7 +1759,7 @@ def build_shaders(py, repo, sh, xlate, env, logs, g, pkg_key=None, mac=False):
      if not pso_pairs.is_file(): pso_pairs = sh / 'pso_pairs.tsv'   # the split's copy is a shader input too (vs_pad)
      if pkg_key:
          PROG.set(step='checking the inputs')
@@ -3343,7 +3390,7 @@ index 8b67465..c6bb365 100755
                            {k: env.get(k) for k in ('XLATE_DEBUG', 'XLATE_REDUCED')}, env=env)
          note = next((n for k in ((kmac, kf) if mac else (kf,)) if (n := reused(k, key)) is not None), None)
          # the libraries are the last build's, so are tables that name their stamp; a missing or stale one is made from that build's Mac outputs, and without them the step runs again
-@@ -1698,9 +1741,10 @@ def build_shaders(py, repo, sh, xlate, env, logs, g, pkg_key=None, mac=False):
+@@ -1698,9 +1773,10 @@ def build_shaders(py, repo, sh, xlate, env, logs, g, pkg_key=None, mac=False):
      # The Metal work follows from what the build produces: an iPhone build needs only the iOS libraries (the macOS
      # metallibs are about half of the compile and never enter the IPA), a Mac build only the Mac's, and a build that
      # wants both compiles both. The Mac sources and reflection are written either way (c1_full / cb_extent come from them).
@@ -3355,7 +3402,7 @@ index 8b67465..c6bb365 100755
      run([py, repo / 'dm/gfx/tools/own_compilers.py', sh / 'pkg', sh / 'cache'], log, env=benv)
      PROG.watch(None)
      if not chain_tables(py, repo, sh, env, logs, g, chain): raise BuildError(f'no stamped Mac shader outputs in {sh / "cache" / f"b-{chain}"} (inputs.tsv): dmsh_build.py did not finish a full build')
-@@ -2127,6 +2171,9 @@ def main(args=None):
+@@ -2127,6 +2203,9 @@ def main(args=None):
      env = dict(os.environ, PATH=os.pathsep.join(TOOL_PATHS + [os.environ.get('PATH', '/usr/bin:/bin:/usr/sbin:/sbin')]))
      env.setdefault('USER', getpass.getuser())   # xcodegen fails without USER (Couldn't find current username)
      configure_dotnet(env)
@@ -3365,7 +3412,7 @@ index 8b67465..c6bb365 100755
      env.setdefault('J', str(os.cpu_count() or 8))   # shader_split.py's and dmsh_build.py's workers (their default is 8)
      py = sys.executable
      app, fam = scan_nsps(nsp_dir)
-@@ -2196,6 +2243,7 @@ def main(args=None):
+@@ -2196,6 +2275,7 @@ def main(args=None):
      env.update(DM_GAME=g.id, DM_ROOT=str(work), WORK=str(work / 'tmp'))
      logs = work / 'logs'
      check_prereqs(env, xlate, mac)
@@ -3373,7 +3420,7 @@ index 8b67465..c6bb365 100755
      picks = pick_nsps(fam, have, versions)
  
      ex = work / 'extract'; ex.mkdir(parents=True, exist_ok=True); (work / 'tmp').mkdir(exist_ok=True)
-@@ -2356,10 +2404,14 @@ def main(args=None):
+@@ -2356,10 +2436,14 @@ def main(args=None):
          return
      watch = IpaWatch(repo, work / 'ipa', out_ipa)
      PROG.stage('app build', poll=watch.poll, step='starting')   # build_ipa.sh's "pack IPA" line starts the stage "IPA pack"

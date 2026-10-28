@@ -1,5 +1,5 @@
 diff --git a/scripts/build_ipa_from_nsp.py b/scripts/build_ipa_from_nsp.py
-index c6bb365..621ff6b 100755
+index 5d5dc47..b3fc326 100755
 --- a/scripts/build_ipa_from_nsp.py
 +++ b/scripts/build_ipa_from_nsp.py
 @@ -874,6 +874,7 @@ def check_prereqs(env, xlate, mac=False):   # mac: a Mac-only build (PLATFORM 'm
@@ -10,11 +10,11 @@ index c6bb365..621ff6b 100755
      else: tools = {'dotnet': '.NET 10', 'spirv-cross': 'spirv-cross', 'make': 'make', 'clang': 'clang', 'ld64.lld': 'lld', 'wine': 'wine (runs Apple\'s Metal Developer Tools for Windows)'}   # Linux: dm/linux/README.md
      if mac: del tools['xcodegen']
      gone = [f'{t} ({how})' for t, how in tools.items() if not shutil.which(t, path=env['PATH'])]
-@@ -901,6 +902,13 @@ def xlate_launcher(xlate, d):
-                 and (d / 'dmsh_xlate').read_text() == script): return d / 'dmsh_xlate'
-     except OSError: pass
-     rmtree(d); d.mkdir(parents=True)
-+    if sys.platform == 'win32':   # no symlinks without a privilege, no shell scripts: copies, and a launcher .exe that runs <its name>.dll with dotnet (DM_DOTNET_LAUNCHER)
+@@ -933,6 +934,13 @@ def xlate_launcher(xlate, d):
+             if sys.platform == 'win32': shutil.copy2(t, d / 'run' / n)
+             else: (d / 'run' / n).symlink_to(t)
+         (d / 'run/dmsh_xlate.dll').write_bytes(own)
++    if sys.platform == 'win32':   # no symlinks without a privilege, no shell scripts: copies, and a launcher .exe that runs <its name>.dll with dotnet (DM_DOTNET_LAUNCHER), run/'s when there is one
 +        launcher = os.environ.get('DM_DOTNET_LAUNCHER')
 +        if not launcher or not Path(launcher).is_file(): raise BuildError('no dotnet launcher (DM_DOTNET_LAUNCHER): the packaged app provides it')
 +        for f in xlate.parent.iterdir():

@@ -1,7 +1,7 @@
 # A release the app updates from (crates/xtask/src/release.rs, crates/nxcore/src/update.rs), for a push to main
 # whose commit message has [ci] (or a manual run). The same `cargo xtask release` as on the computer that publishes: it builds only the
 # components whose inputs changed since the latest release (decided here first, by `release --plan`), with two differences:
-#   - the iOS app's Swift object is compiled on a macOS runner, with Xcode's iPhoneOS SDK (the Linux runner has none), only when a bundle is built;
+#   - the iOS app's Swift object is compiled on a macOS runner, with Xcode 27.1's iPhoneOS SDK (the Linux runner has none), only when a bundle is built;
 #   - the release key comes from the repository secret NXNATIVEV2_SIGNING_KEY (just ci-secret), and what the release built is attested
 #     (GitHub's artifact attestations: Sigstore, verifiable with `gh attestation verify`).
 name: release
@@ -37,15 +37,14 @@ jobs:
   swift:
     needs: plan
     if: needs.plan.outputs.bundles != ''
-    runs-on: macos-26
+    # Xcode 27.1 or later (xtask swift-object checks it), as nxnative supports: its SwiftUI macros (@State) run only on a Mac. On GitHub's xcode-27 image,
+    # named by path as nxnative's CI does, so the image's default moving does not move the release
+    runs-on: xcode-27
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_27.1.app/Contents/Developer
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
-      - name: Xcode with the iOS 26 SDK
-        run: |
-          x=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
-          if [ -n "$x" ]; then sudo xcode-select -s "$x"; fi
-          xcrun --sdk iphoneos --show-sdk-version
       - name: The Swift object
         run: cargo xtask swift-object --out dist/swift_DmIOS.o
       - uses: actions/upload-artifact@v4

@@ -41,6 +41,9 @@ const DOTNET_RUNTIME: &str = "10.0.13";
 const SPIRV_CROSS_TAG: &str = "vulkan-sdk-1.4.363.0";
 const LLVM_VERSION: &str = "23.1.4";
 const MIN_IOS: &str = "26.0";
+/// The Xcode the iOS app's Swift object is compiled with, at least (its iPhoneOS SDK's version): the one nxnative supports (its README, own_compilers.py).
+/// From 27.1 SwiftUI's @State is a macro whose plugin only Xcode has, so the object comes from a Mac (CI's swift job), not from Linux's swiftc
+const MIN_XCODE_SDK: (u32, u32) = (27, 1);
 const WIN_RUST_TARGET: &str = "x86_64-pc-windows-gnu";
 /// DejaVu Sans 2.37 (Bitstream Vera / DejaVu license), pinned: the npm package's files, the same bytes as the release's dejavu-fonts-ttf-2.37.tar.bz2.
 /// Noto Sans lacked U+25A1 (□), which The Legend of Zelda: Echoes of Wisdom looks up at startup (it crashed on the null glyph)
@@ -502,6 +505,18 @@ fn swift_object(ctx: &Ctx, sdk_dir: &Path) -> Result<()> {
 fn swift_object_mac(args: &[String]) -> Result<()> {
     ensure!(cfg!(target_os = "macos"), "swift-object runs on macOS, with Xcode's SDK (on Linux, bundle compiles it with the data folder's SDK)");
     let out = PathBuf::from(arg(args, "--out").context("swift-object --out <file>")?);
+    let v = Command::new("xcrun").args(["--sdk", "iphoneos", "--show-sdk-version"]).output().context("xcrun (Xcode)")?;
+    let v = String::from_utf8_lossy(&v.stdout).trim().to_string();
+    let mut parts = v.split('.').map(|p| p.parse::<u32>().ok());
+    let have = (parts.next().flatten(), parts.next().flatten().or(Some(0)));
+    ensure!(
+        matches!(have, (Some(a), Some(b)) if (a, b) >= MIN_XCODE_SDK),
+        "the iPhoneOS SDK is {}: the Swift object needs Xcode {}.{} or later (select it with xcode-select or DEVELOPER_DIR)",
+        if v.is_empty() { "missing".into() } else { v.clone() },
+        MIN_XCODE_SDK.0,
+        MIN_XCODE_SDK.1
+    );
+    say(format!("iPhoneOS SDK {v}"));
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize()?;
     let ctx = Ctx { cache: root.join("target/bundle-cache"), payload: root.join("target/bundle/swift/payload"), platform: "linux", windows: false, version: 0, root: root.clone() };
     if ctx.payload.exists() {
