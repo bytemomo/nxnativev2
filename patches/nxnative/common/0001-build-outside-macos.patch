@@ -1,21 +1,8 @@
-diff --git a/README.md b/README.md
-index bfeb7e1..8cc3c4f 100644
---- a/README.md
-+++ b/README.md
-@@ -189,7 +189,7 @@ A connected game controller hides the touch controls and keeps every button.
- - **Saves and logs** are in the Files app, under the app's name: `save/` and `log.txt`. When something goes wrong, send `log.txt` (the previous run is `log.prev.txt`).
- - **Short stutters** the first time a new scene appears are normal: the app compiles graphics for it once and remembers them for the next launch.
- - **Reinstalling:** some sideloading tools give a reinstalled app a new data folder. Copy `save/` and `pso_user.tsv` over from the old one to keep your progress.
--- **Settings in a file:** lines like `DM_OPMODE=0` (handheld mode: lower resolution, higher frame rate) in `Documents/env.txt` win over the settings screen, which then shows them greyed out. `DM_FPS_TARGET=30` keeps Breath of the Wild, Tears of the Kingdom, Octopath Traveler 0 and Octopath Traveler II at their original 30 fps, which saves battery; `DM_PRESENT_INTERVAL=game` does the same for Monster Train 2. `DM_SHOW_FPS=1` shows the frame rate at the top left (`--show-fps` when packing turns it on from the start). `DM_LAUNCHER=0` skips the settings screen.
-+- **Settings in a file:** lines like `DM_OPMODE=0` (handheld mode: lower resolution, higher frame rate) in `Documents/env.txt` win over the settings screen, which then shows them greyed out. `DM_FPS_TARGET=30` keeps Breath of the Wild, Tears of the Kingdom, Octopath Traveler 0 and Octopath Traveler II at their original 30 fps, which saves battery; `DM_PRESENT_INTERVAL=game` does the same for Monster Train 2. On the other games the settings screen's **Frame rate** (`DM_MAX_FPS`: 30, 60, 120 or 150) sets the rate of the screen the game sees; a game whose logic counts frames then runs slower or faster. `DM_SHOW_FPS=1` shows the frame rate at the top left (`--show-fps` when packing turns it on from the start). `DM_LAUNCHER=0` skips the settings screen.
- 
- ## Known issues
- 
 diff --git a/dm/games/profile_guess.py b/dm/games/profile_guess.py
-index 35c9dc9..415f7c9 100644
+index 2a5d99e..cd47939 100644
 --- a/dm/games/profile_guess.py
 +++ b/dm/games/profile_guess.py
-@@ -60,7 +60,7 @@ def romfs_files(romfs):   # (path, size, first 32 bytes) of every RomFS file: fr
+@@ -67,7 +67,7 @@ def romfs_files(romfs):   # (path, size, first 32 bytes) of every RomFS file: fr
          for n in names:
              p = Path(d) / n
              with open(p, 'rb') as f: head = f.read(32)
@@ -25,76 +12,103 @@ index 35c9dc9..415f7c9 100644
  
  def npdm(path):   # (system resource size, program ID) from main.npdm; a non-zero system resource means virtual address memory (Engage 16 MB); (0, None) without the file
 diff --git a/dm/games/settings.py b/dm/games/settings.py
-index 135f317..762aba5 100644
+index d16b9cb..a674a2b 100644
 --- a/dm/games/settings.py
 +++ b/dm/games/settings.py
-@@ -14,8 +14,8 @@ def rows():
+@@ -10,7 +10,7 @@ HERE = Path(__file__).resolve().parent
+ sys.path.insert(0, str(HERE)); sys.path.insert(0, str(HERE.parent / 'tools'))
+ import game, nacp
+ 
+-SECTIONS = ('Game', 'Controls', 'Performance')   # headings on the single settings screen
++SECTIONS = ('Game', 'Controls', 'Performance', 'Local play')   # headings on the single settings screen
+ SCHEMA = 1   # launcher.json's version (docs/launcher.schema.json); it grows only by optional fields, so a reader of 1 reads every 1
+ # The meta column's keys, each with the pattern its value must match. A key is added here, in docs/frontends.md and in
+ # docs/launcher.schema.json together (test_launcher_settings.py checks that the three agree); a reader ignores keys it does not know
+@@ -46,9 +46,9 @@ def rows():
      for n, line in enumerate((HERE / 'settings.tsv').read_text(encoding='utf-8').splitlines(), 1):
          if not line.strip() or line.startswith('#'): continue
          c = line.split('\t')
--        if len(c) not in (6, 7): sys.exit(f'settings.tsv:{n}: 6 or 7 columns expected, {len(c)} found')
--        yield n, c + [''] * (7 - len(c))
-+        if not 6 <= len(c) <= 10: sys.exit(f'settings.tsv:{n}: 6 to 10 columns expected, {len(c)} found')
-+        yield n, c + [''] * (10 - len(c))
+-        if len(c) not in (7, 8, 9): sys.exit(f'settings.tsv:{n}: 7 to 9 columns expected, {len(c)} found')
++        if not 7 <= len(c) <= 11: sys.exit(f'settings.tsv:{n}: 7 to 11 columns expected, {len(c)} found')
+         if c[5] not in SECTIONS: sys.exit(f'settings.tsv:{n}: unknown section: {c[5]}')
+-        yield n, c + [''] * (9 - len(c))
++        yield n, c + [''] * (11 - len(c))
  
  
  def fixups_keys(path):   # '# KEY<TAB>value' header rows of a rewriter table
-@@ -38,6 +38,7 @@ def build(gid, patched, control):
-         if cond == 'languages>1': return len(langs) > 1
+@@ -74,6 +74,7 @@ def build(gid, patched, control):
          if cond.startswith('fixups:'): return cond[7:] in keys
          if cond.startswith('gfxapi:'): return os.environ.get('GFXAPI', '') == cond[7:]
+         if cond.startswith('platform:'): return platform == cond[9:]
 +        if cond.startswith('imports:'): return any(cond[8:].encode() in p.read_bytes() for p in Path(patched).glob('*.patched.bin'))   # a rewritten module names the symbol
          m = re.fullmatch(r'(DM_GAME_\w+)(!=|==)(.*)', cond)
          if m: return (macro(m[1], n) == m[3]) == (m[2] == '==')
          sys.exit(f'settings.tsv:{n}: unknown condition {cond}')
-@@ -50,9 +51,9 @@ def build(gid, patched, control):
-         return d
+@@ -95,7 +96,7 @@ def build(gid, patched, control):
+         return None
  
-     out = []
--    for n, (var, kind, values, default, cond, label, note) in rows():
-+    for n, (var, kind, values, default, cond, label, note, group, icon, help_) in rows():
+     out, table, base = [], {r[1][0]: takes(r[1][1], r[1][2]) for r in rows()}, render_base(g)
+-    for n, (var, kind, values, default, cond, section, label, note, extra) in rows():
++    for n, (var, kind, values, default, cond, section, label, note, extra, icon, help_) in rows():
+         m = meta(extra, n)
+         if 'needs' in m:
+             need, want = m['needs'].split('=', 1)
+@@ -104,6 +105,8 @@ def build(gid, patched, control):
+             if can is not None and want not in can: sys.exit(f'settings.tsv:{n}: needs a value {need} never takes: {want} (it takes {", ".join(sorted(can))})')
          if not shown(cond, n): continue
--        s = {'env': var, 'kind': kind, 'label': label, 'note': note, 'default': value(default, n)}
-+        s = {'env': var, 'kind': kind, 'label': label, 'note': note, 'default': value(default, n), 'group': group or 'Settings', 'icon': icon or 'slider.horizontal.3', 'help': help_}
+         s = {'env': var, 'kind': kind, 'section': section, 'label': label, 'note': note, 'default': value(default, n), **m}
++        if icon: s['icon'] = icon   # the iPhone's settings screen: the row's SF Symbol and its ⓘ text
++        if help_: s['help'] = help_
+         if var == 'DM_RENDER_SCALE' and base: s['base'] = base   # the render scale in pixels, for the console mode chosen
          if kind == 'choice':
              opts = [list(l) for l in langs] if values == 'languages' else [v.split('=', 1) for v in values.split(',')]
-             if any(len(o) != 2 for o in opts): sys.exit(f'settings.tsv:{n}: choice values are value=label,...')
 diff --git a/dm/games/settings.tsv b/dm/games/settings.tsv
-index e538005..d4799e7 100644
+index 688d5d0..e5fc241 100644
 --- a/dm/games/settings.tsv
 +++ b/dm/games/settings.tsv
-@@ -4,15 +4,18 @@
- #   variable  the environment variable the setting sets
- #   kind      choice: values value=label,... (languages: the game's own, from its control data); range: values low:high:step, shown as a percentage; toggle: 1 / 0, values -
- #   default   a value; DM_GAME_<NAME>: the host's own default from the game profile (game_profile.h, game.py); build:<VAR>: the IPA build's setting (build_ipa.sh)
--#   shown     always; DM_GAME_<NAME>!=<value> or ==<value>; fixups:<KEY>: main's rewriter table has that key (a stub in the game's build, patch_nso.py); languages>1; gfxapi:<API>: the packer's GFXAPI
-+#   shown     always; DM_GAME_<NAME>!=<value> or ==<value>; fixups:<KEY>: main's rewriter table has that key (a stub in the game's build, patch_nso.py); languages>1; gfxapi:<API>: the packer's GFXAPI;
+@@ -9,26 +9,30 @@
+ #             <ios>|<mac> selects the platform's default before resolving a profile macro or build variable
+ #   shown     always; DM_GAME_<NAME>!=<value> or ==<value>; fixups:<KEY>: main's rewriter table has that key (a stub in the game's build, patch_nso.py); languages>1; gfxapi:<API>: the packer's GFXAPI;
+ #             platform:<ios | mac>: the app's platform (SETTINGS_PLATFORM, ios when unset), for a switch only that platform's front end reads
+-#   section   Game, Controls or Performance: a heading on the single settings screen. Rows appear in table order within each section
 +#             imports:<symbol>: a rewritten module names it (the game links that SDK function)
- #   label, note  the setting's name and the line under it (the note may be empty)
--DM_FPS_TARGET	choice	30=30 fps,60=60 fps	DM_GAME_FPS_TARGET	DM_GAME_FPS_TARGET!=0	Frame rate
--DM_RENDER_SCALE	range	0.5:1.0:0.05	1.0	fixups:RENDER_SCALE	Render scale
--DM_PRESENT_SNAP	toggle	-	0	gfxapi:nvn	Frame buffering	May reduce stutter; adds display latency.
--DM_OPMODE	choice	1=Docked,0=Handheld	DM_GAME_OPMODE	always	Console mode
--DM_LANG	choice	languages	build:DM_LANG	languages>1	Game language
--DM_SHOW_FPS	toggle	-	build:DM_SHOW_FPS	always	Frame-rate counter
--DM_METAL_HUD	toggle	-	0	always	Performance HUD
--DM_TOUCH_HAPTICS	toggle	-	1	always	Touch feedback	Haptic clicks when pressing touch controls.
--DM_RUMBLE	toggle	-	1	always	Game rumble	Vibration from the game on your phone or connected controller.
--DM_RUMBLE_GAIN	range	0:3:0.1	1.0	always	Rumble strength	Adjusts game rumble alongside the game's own vibration setting.
-+#   group, icon, help  the launcher's card the setting is in (cards in the order their first rows come), an SF Symbol for its row, and what the ⓘ next to it explains
-+DM_FPS_TARGET	choice	30=30 fps,60=60 fps	DM_GAME_FPS_TARGET	DM_GAME_FPS_TARGET!=0	Frame rate		Display & performance	gauge.with.needle	The frame rate the game runs at. 60 fps is the host's own frame step for this game, which runs at 30 on a Switch: smoother, at the cost of more battery and heat.
-+DM_MAX_FPS	choice	0=Game default,30=30 fps,60=60 fps,120=120 fps,150=150 fps	0	DM_GAME_FPS_TARGET==0	Frame rate		Display & performance	gauge.with.needle	The most frames per second the game may draw. Game default keeps its own pacing. A lower cap saves battery and keeps the device cooler; 120 and 150 only matter on a ProMotion screen, for games that run faster than 60.
-+DM_RENDER_SCALE	range	0.5:1.0:0.05	1.0	fixups:RENDER_SCALE	Render scale		Display & performance	aspectratio	Draws the game below its own resolution and scales the picture up to the screen. Lower is faster and cooler, with a softer picture.
-+DM_PRESENT_SNAP	toggle	-	0	gfxapi:nvn	Frame buffering	May reduce stutter; adds display latency.	Display & performance	square.stack.3d.up	Keeps one finished frame in reserve so the screen gets frames at a steady pace. It may reduce stutter, and adds a little display latency.
-+DM_OPMODE	choice	1=Docked,0=Handheld	DM_GAME_OPMODE	always	Console mode		Game	tv	Docked: the game runs as on a TV, usually at 1080p, and expects a controller. Handheld: it runs as on the Switch's own screen, usually at 720p, and games that use touch take it from the screen. Many games change little else, so the difference can be hard to see.
-+DM_LANG	choice	languages	build:DM_LANG	languages>1	Game language		Game	globe	The language the game itself uses, among the ones it comes with.
-+DM_SHOW_FPS	toggle	-	build:DM_SHOW_FPS	always	Frame-rate counter		Display & performance	number	A small counter in the top left corner: the frames shown on the screen each second.
-+DM_TOUCH_HAPTICS	toggle	-	1	always	Touch feedback		Controls	hand.tap	A light haptic click each time a touch control is pressed or released.
-+DM_RUMBLE	toggle	-	1	always	Game rumble		Controls	waveform	The game's vibration, on this iPhone or on a connected controller.
-+DM_RUMBLE_GAIN	range	0:3:0.1	1.0	always	Rumble strength		Controls	dial.medium	How strong the game's rumble feels, on top of the game's own vibration setting.
-+DM_LAN	toggle	-	1	imports:_ZN2nn3ldn10InitializeEv	Local play		Local play	antenna.radiowaves.left.and.right	Play with nearby iPhones and iPads running this game, as with the Switch's local wireless. iOS asks once for Local Network access. A password, set in the game from the lock at the top of the screen, keeps the game to the devices that have it; without one, anyone nearby with the game can join.
++#   section   Game, Controls, Performance or Local play: a heading on the single settings screen. Rows appear in table order within each section
+ #             Reset to tested defaults clears all launcher choices; values fixed by an env file stay
+ #   label, note  the setting's name and the line under it (may be empty; only for a setting with a cost: latency, memory, heat)
+ #   meta      optional, key=value pairs separated by ; (settings.py META lists the keys; docs/frontends.md, The settings list, describes them):
+ #             level=basic  a setting a front end shows first;  needs=<VAR>=<value>  a sub-setting, drawn only while the row that sets <VAR> has that value
+-DM_FPS_TARGET	choice	30=30 fps,60=60 fps	DM_GAME_FPS_TARGET	DM_GAME_FPS_TARGET!=0	Game	Frame rate		level=basic
++#   icon, help  optional: an SF Symbol for the row on the iPhone's settings screen, and what the ⓘ next to it explains
++DM_FPS_TARGET	choice	30=30 fps,60=60 fps	DM_GAME_FPS_TARGET	DM_GAME_FPS_TARGET!=0	Game	Frame rate		level=basic	gauge.with.needle	The frame rate the game runs at. 60 fps is the host's own frame step for this game, which runs at 30 on a Switch: smoother, at the cost of more battery and heat.
++DM_MAX_FPS	choice	0=Game default,30=30 fps,60=60 fps,120=120 fps,150=150 fps	0	DM_GAME_FPS_TARGET==0	Game	Frame rate		level=basic	gauge.with.needle	The most frames per second the game may draw. Game default keeps its own pacing. A lower cap saves battery and keeps the device cooler; 120 and 150 only matter on a ProMotion screen, for games that run faster than 60.
+ DM_DYNAMIC_RESOLUTION	toggle	-	0	fixups:DYNAMIC_RESOLUTION	Game	Dynamic resolution	Adjusts resolution between 70% and 100% under load. Turn off to keep full resolution for the selected console mode.
+-DM_RENDER_SCALE	range	0.5:1.0:0.05	1.0	fixups:RENDER_SCALE	Game	Render scale		level=basic
+-DM_OPMODE	choice	1=Docked,0=Handheld	DM_GAME_OPMODE	always	Game	Console mode		level=basic
++DM_RENDER_SCALE	range	0.5:1.0:0.05	1.0	fixups:RENDER_SCALE	Game	Render scale		level=basic	aspectratio	Draws the game below its own resolution and scales the picture up to the screen. Lower is faster and cooler, with a softer picture.
++DM_OPMODE	choice	1=Docked,0=Handheld	DM_GAME_OPMODE	always	Game	Console mode		level=basic	tv	Docked: the game runs as on a TV, usually at 1080p, and expects a controller. Handheld: it runs as on the Switch's own screen, usually at 720p, and games that use touch take it from the screen. Many games change little else, so the difference can be hard to see.
+ DM_PRESENT_UPSCALE	choice	off=Standard,metalfx=MetalFX	off	always	Game	Upscaling	Uses more GPU time and can increase heat.
+-DM_LANG	choice	languages	build:DM_LANG	languages>1	Game	Game language		level=basic
++DM_LANG	choice	languages	build:DM_LANG	languages>1	Game	Game language		level=basic	globe	The language the game itself uses, among the ones it comes with.
+ DM_FULLSCREEN	choice	0=Window,1=Fullscreen	0	platform:mac	Game	Display mode		level=basic
+-DM_SHOW_FPS	toggle	-	build:DM_SHOW_FPS	platform:ios	Game	Frame-rate counter
+-DM_TOUCH_HAPTICS	toggle	-	1	platform:ios	Controls	Touch feedback
+-DM_RUMBLE	toggle	-	1	always	Controls	Game rumble		level=basic
+-DM_RUMBLE_GAIN	range	0:3:0.1	1.0	always	Controls	Rumble strength		needs=DM_RUMBLE=1
++DM_SHOW_FPS	toggle	-	build:DM_SHOW_FPS	platform:ios	Game	Frame-rate counter			number	A small counter in the top left corner: the frames shown on the screen each second.
++DM_TOUCH_HAPTICS	toggle	-	1	platform:ios	Controls	Touch feedback			hand.tap	A light haptic click each time a touch control is pressed or released.
++DM_RUMBLE	toggle	-	1	always	Controls	Game rumble		level=basic	waveform	The game's vibration, on this iPhone or on a connected controller.
++DM_RUMBLE_GAIN	range	0:3:0.1	1.0	always	Controls	Rumble strength		needs=DM_RUMBLE=1	dial.medium	How strong the game's rumble feels, on top of the game's own vibration setting.
+ DM_RUMBLE_MIN	range	0:0.9:0.05	0	always	Controls	Rumble cutoff
+-DM_PRESENT_SNAP	toggle	-	DM_GAME_PRESENT_SNAP	gfxapi:nvn	Performance	Frame buffering	Up to one frame more display latency.
++DM_PRESENT_SNAP	toggle	-	DM_GAME_PRESENT_SNAP	gfxapi:nvn	Performance	Frame buffering	Up to one frame more display latency.		square.stack.3d.up	Keeps one finished frame in reserve so the screen gets frames at a steady pace. It may reduce stutter, and adds a little display latency.
+ DM_PSO_MTL4	toggle	-	DM_GAME_PSO_MTL4|1	gfxapi:nvn	Performance	Metal 4 pipelines	Keeps a pipeline archive; uses more memory.
+ DM_PSO_PREBUILD	toggle	-	1	gfxapi:nvn	Performance	Pipeline prebuild	The first start waits a few minutes for it, once.
+ DM_NVN_ENC_THREAD	toggle	-	1|0	gfxapi:nvn	Performance	Encode thread
+ DM_FPS_HOLD	toggle	on/off	DM_GAME_FPS_HOLD	DM_GAME_FPS_TARGET!=0	Performance	Hold frames when late
+ DM_METAL_HUD	toggle	-	0	always	Performance	Performance HUD
++DM_LAN	toggle	-	1	imports:_ZN2nn3ldn10InitializeEv	Local play	Local play			antenna.radiowaves.left.and.right	Play with nearby iPhones and iPads running this game, as with the Switch's local wireless. iOS asks once for Local Network access. A password, set in the game from the lock at the top of the screen, keeps the game to the devices that have it; without one, anyone nearby with the game can join.
 diff --git a/dm/gfx/gl/hle_gl.m b/dm/gfx/gl/hle_gl.m
-index fdd757f..5e31eda 100644
+index eb5ee8f..bdfb980 100644
 --- a/dm/gfx/gl/hle_gl.m
 +++ b/dm/gfx/gl/hle_gl.m
 @@ -28,7 +28,7 @@
@@ -106,7 +120,7 @@ index fdd757f..5e31eda 100644
  int mtl_link_active(void); int mtl_link_wait_tick(int vsyncs, uint64_t timeout_ns);   // nvn_mtl.m
  void dm_vi_layer_size(int *w, int *h);   // hle_vi.c: the size of the last sized vi::CreateLayer
  
-@@ -1926,11 +1926,11 @@ EGL(eglSwapBuffers, EGLBoolean, EGLDisplay d, EGLSurface s) {
+@@ -1925,11 +1925,11 @@ EGL(eglSwapBuffers, EGLBoolean, EGLDisplay d, EGLSurface s) {
          uint64_t v = cb_commit();
          int vs = S.swap_interval < 1 ? 1 : S.swap_interval > 4 ? 4 : S.swap_interval;
          int k = g_win.cur;
@@ -121,27 +135,27 @@ index fdd757f..5e31eda 100644
          else if (S.swap_interval > 0) {
              if (g_next_swap > now) { uint64_t w = g_next_swap - now; struct timespec ts = {(time_t)(w / 1000000000ull), (long)(w % 1000000000ull)}; nanosleep(&ts, NULL); }
 diff --git a/dm/gfx/nvn/dmsh_chain.h b/dm/gfx/nvn/dmsh_chain.h
-index 98162fc..374dc6a 100644
+index 8552c74..656aca9 100644
 --- a/dm/gfx/nvn/dmsh_chain.h
 +++ b/dm/gfx/nvn/dmsh_chain.h
 @@ -1,3 +1,3 @@
  // Generated file (dm/gfx/tools/dmsh_chain.py --header): the B shader library translation chain version this source tree expects (default options), one for every game;
  // the host loads only <library dir>/b-<V>/. Run dmsh_chain.py --header after changing the chain's tools and commit this file with the change
--#define DMSH_CHAIN "dec5ee141a9f"
-+#define DMSH_CHAIN "b8bc2fe1f5fc"
+-#define DMSH_CHAIN "a78f966a7b38"
++#define DMSH_CHAIN "757cbb914417"
 diff --git a/dm/gfx/nvn/hle_nvn.c b/dm/gfx/nvn/hle_nvn.c
-index adf4ac7..8a82717 100644
+index 700713f..48b226b 100644
 --- a/dm/gfx/nvn/hle_nvn.c
 +++ b/dm/gfx/nvn/hle_nvn.c
-@@ -1527,6 +1527,7 @@ static int fps_step_cap(void) {
-     return t <= 0 ? 0 : __atomic_load_n((uint32_t *)(dm_fps_state + 4), __ATOMIC_RELAXED) || t <= 30 ? 30 : 60;
+@@ -1624,6 +1624,7 @@ static int fps_present_cap(void) {
+     }
+     return g_present_cap;
  }
- static int fstep_on(void) { return fps_step_cap() != 0; }   // the host decides the steps in whole vsyncs
-+int nvn_frame_step_game(void) { return dm_fps_state != NULL; }   // nvn_mtl.m mtl_max_fps: the player's frame rate leaves the frame step's games alone
++int nvn_frame_step_game(void) { return dm_fps_state != NULL || fps_present_cap(); }   // nvn_mtl.m mtl_max_fps: the player's frame rate leaves the games whose rate DM_FPS_TARGET sets alone (frame step or engine limiter)
  static nvn_fstep g_fs;   // present thread only
  static nvn_fgpu g_fg;   // the GPU time at kmin and at the current hold (nvn_fstep_gpu_slowed)
  static _Atomic int g_fs_k;   // the hold presentation follows (0 = not decided yet)
-@@ -1536,7 +1537,7 @@ static void present_cfg(const win_t *o) {
+@@ -1633,7 +1634,7 @@ static void present_cfg(const win_t *o) {
      if (g_hz >= 0) return;
      // The interval mode comes from the game profile (present_interval, default game): whether frames follow the present interval the game sets depends on whether the game's logic counts frames, which differs per game. Environment variables override it, and can override the fixed 60 Hz.
      int scr = mtl_display_hz();
@@ -150,7 +164,7 @@ index adf4ac7..8a82717 100644
      if (!g_hz) LOG("[nvn] [WARNING] DM_PRESENT_HZ=0: frame rate uncapped, frame pacing unlike the device, UI logic may drift (for profiling only, not for verdicts / cross-checks)");
      // Cut (intentional deviation from the original game's behavior): with DM_PRESENT_INTERVAL=display the present interval set by the game is not followed and one frame is presented per display-link tick,
      // with a fixed hard floor of 60 fps; the logic stays at 25 ticks, and the client's frame-counted UI logic is unaffected -
-@@ -1555,8 +1556,9 @@ static uint64_t present_period(const win_t *o) {
+@@ -1667,8 +1668,9 @@ static uint64_t present_period(const win_t *o) {
          if (want < 2) atomic_store(&g_itv2_since, 0);
          else if (was < 2) atomic_store(&g_itv2_since, now_ns() | 1);   // | 1: the start is never 0
      }
@@ -163,10 +177,10 @@ index adf4ac7..8a82717 100644
  // The period the acquire thread declares to the scheduler (set_time_constraint): the present period, except that a hold the frame step raised for late frames keeps the cap's deadline.
  // Declaring the longer hold let the performance controller move the game to the efficiency cores at half the clock (TOTK on an iPhone: 3.4 → 1.5 GHz and 65% → 5% on performance
 diff --git a/dm/gfx/nvn/nvn_mtl.m b/dm/gfx/nvn/nvn_mtl.m
-index 2ffd5c0..f989454 100644
+index ab405ac..013eeec 100644
 --- a/dm/gfx/nvn/nvn_mtl.m
 +++ b/dm/gfx/nvn/nvn_mtl.m
-@@ -3074,13 +3074,44 @@ static void pso_user_record(const char *fmt, ...) {
+@@ -3616,13 +3616,44 @@ static void pso_user_record(const char *fmt, ...) {
  // Build the library from a .metallib file without permanently occupying a file descriptor: newLibraryWithURL keeps that file open for as long as the library object lives (one per game shader - of the 258 descriptors the iOS app permanently holds in a run, 213 are these,
  // while the default soft limit of an iOS process is 256; new shaders created in other acts raise it further). Here the file is mapped into memory and closed immediately, and the library is built from the in-memory data; the mapping is released when the library's data object is freed
  static __thread int t_lib_layer;
@@ -215,7 +229,7 @@ index 2ffd5c0..f989454 100644
      return [g_dev newLibraryWithData:d error:err];
  }
  // NVN depth mode (nvnDeviceSetDepthMode): every vertex library has two entry points (dmsh_build.py vs_depth): main0 rewrites z for the GL convention (near = -w, NVN's default),
-@@ -3116,7 +3147,7 @@ static MTL4FunctionDescriptor *fn4_of(id<MTLFunction> f) {
+@@ -3658,7 +3689,7 @@ static MTL4FunctionDescriptor *fn4_of(id<MTLFunction> f) {
  // layer: a vertex shader's layer entry points (entry_layer / entry_layer_z, which also write the layer) instead of main0 / main0_z, for a program whose geometry shader is a slice writer (prog_fold_gs)
  static NvShader *shader_load(NSString *pc, int stage, int layer) {
      NSError *e = nil;
@@ -224,7 +238,7 @@ index 2ffd5c0..f989454 100644
      NSDictionary *j = jd ? [NSJSONSerialization JSONObjectWithData:jd options:0 error:nil] : nil;
      if (j && stage == 2 && [j[@"gs_slice"] isKindOfClass:[NSDictionary class]] && [j[@"chain"] isEqual:@DMSH_CHAIN]) {   // a slice-writing geometry shader has no library: a stub prog_fold_gs replaces
          NvShader *o = [NvShader new]; o->stage = 2; o->lay_loc = -1; strlcpy(o->key, pc.UTF8String, sizeof o->key);
-@@ -7844,7 +7875,27 @@ static const char *cctx_snap(void) {
+@@ -9623,7 +9654,27 @@ static const char *cctx_snap(void) {
  }
  // When the game itself asks for 30 fps (pacing by the game's present interval, interval 2, hle_nvn.c) the display link runs at 30 Hz too: games whose logic counts frames, such as Engage, are not pulled up to 60 fps by the display link on iOS
  __attribute__((weak)) int nvn_game_fps(void) { return 60; }   // hle_nvn.c provides the strong definition
@@ -252,26 +266,27 @@ index 2ffd5c0..f989454 100644
      return env > 0 ? env : nvn_game_fps() == 30 ? 30 : 60; }
  // Hand a submission to the GPU in segments (DM_NVN_CUT=draw count, 0 = off; default 64): when the game holds back the next frame's submit until this frame's GPU work is done (The Legend of Zelda: Breath of the Wild: the main thread's nvnSyncWait on the fence of the frame just submitted),
  // the GPU sits idle for the milliseconds the host spends translating inside the submit (in the shrine each frame is GPU 13 ms + translation 7 ms back to back). Each time this many draws have accumulated, the command buffer encoded so far is committed between two passes: the GPU runs the earlier passes while the CPU translates the later ones.
-@@ -8799,6 +8850,7 @@ static void link_sync(void) {   // Called every frame by the game's present thre
-     static int applied; int want = g_dm_present_link;
-     if (want < 0 || want > 2) { g_dm_present_link = applied == 3 ? 1 : applied; return; }
+@@ -10796,6 +10847,7 @@ static void link_sync(void) {   // Called every frame by the game's present thre
+     if (g_rescue_mode) want = 0;
+     pthread_mutex_unlock(&g_pq_mu);
      if (want && mtl_fps_target() == 30) want = 3;   // Power-saving mode: display link at 30 Hz
 +    else if (want && mtl_vsync_hz() > 60) want = 2;   // the player's frame rate above 60 (DM_MAX_FPS): display link at 120 Hz
      if (want) front_screen_match(want == 3 ? 30 : want == 2 ? 120 : 60);
      // The screen's rate changed (switched by front_screen_match, or another screen): the range again, virtual ticks or none. Taken only once the link object exists, so a change
      // while its thread starts (after link_main read the rate) is not lost
-@@ -9059,8 +9111,9 @@ int mtl_link_wait_tick(int vsyncs, uint64_t timeout_ns) {
+@@ -11063,8 +11115,10 @@ int mtl_link_wait_tick(int vsyncs, uint64_t timeout_ns) {
      // How many display-link ticks one frame takes: the game's present interval (vsyncs, 60 Hz) times 1 with a 60 Hz display link, times 2 with a 120 Hz one, halved and rounded up at 30 Hz.
      // A frame presented with interval N blocks the game for N vsyncs on the Switch, as the display callback holds it N ticks: games that scale their time step by the interval (BotW's VFR: interval / 2)
      // ran at double speed while they produced interval-2 frames every 60 Hz tick (iPhone log: Link sprinting with B, the interval flapping 1 ↔ 2)
 +    // The vsyncs are the game's display's (60 Hz, or the player's rate above 60: mtl_vsync_hz); a frame takes at least one tick
      if (vsyncs < 1) vsyncs = 1;
--    const uint64_t step = g_link_mode == 3 ? (uint64_t)(vsyncs + 1) / 2 : (uint64_t)vsyncs * (g_link_mode == 2 ? 2 : 1);
-+    const uint64_t lhz = g_link_mode == 3 ? 30 : g_link_mode == 2 ? 120 : 60, vhz = (uint64_t)mtl_vsync_hz(), step = ((uint64_t)vsyncs * lhz + vhz - 1) / vhz;
-     pthread_mutex_lock(&g_link_mu);
-     if (g_link_tick_n >= started_tick + step) { started_tick = g_link_tick_n; pthread_mutex_unlock(&g_link_mu); return 1; }
-     struct timespec ts; clock_gettime(CLOCK_REALTIME, &ts);
-@@ -9075,7 +9128,7 @@ int mtl_link_wait_tick(int vsyncs, uint64_t timeout_ns) {
+-    return mtl_link_wait_ticks(g_link_mode == 3 ? (vsyncs + 1) / 2 : vsyncs * (g_link_mode == 2 ? 2 : 1), timeout_ns);
++    const int vhz = mtl_vsync_hz();   // ticks: vsyncs at the game's rate counted at the link's, rounded up (60 Hz vsyncs: ×1 at 60, ×2 at 120, halved and rounded up at 30)
++    return mtl_link_wait_ticks((vsyncs * mtl_link_rate() + vhz - 1) / vhz, timeout_ns);
+ }
+ // The display link's rate: 120 Hz (DM_PRESENT_LINK=2), 60, or 30 in power-saving mode
+ int mtl_link_rate(void) { return g_link_mode == 3 ? 30 : g_link_mode == 2 ? 120 : 60; }
+@@ -11087,7 +11141,7 @@ int mtl_link_wait_ticks(int ticks, uint64_t timeout_ns) {
  // 0 when the link does not run, runs at 30 Hz (power saving: the 60 Hz event cannot come from it) or gives no tick within the timeout; the caller then keeps its own clock
  int mtl_link_wait_vsync(uint64_t *seen, uint64_t timeout_ns) {
      if (!mtl_link_active() || g_link_mode == 3) return 0;
@@ -281,10 +296,10 @@ index 2ffd5c0..f989454 100644
      if (*seen > g_link_tick_n || g_link_tick_n > *seen + 4 * step) *seen = g_link_tick_n;   // first call, or far behind (a stall): from the current tick on, no burst
      struct timespec ts; clock_gettime(CLOCK_REALTIME, &ts);
 diff --git a/dm/gfx/nvn/nvn_obj.h b/dm/gfx/nvn/nvn_obj.h
-index e2af98a..ceb07c2 100644
+index f7011f3..ab5d1ac 100644
 --- a/dm/gfx/nvn/nvn_obj.h
 +++ b/dm/gfx/nvn/nvn_obj.h
-@@ -189,7 +189,10 @@ uint64_t mtl_drawable_ns_take(void);   // Take and zero: cumulative ns spent wai
+@@ -206,7 +206,10 @@ uint64_t mtl_drawable_ns_take(void);   // Take and zero: cumulative ns spent wai
  void mtl_bw(uint64_t *load, uint64_t *store, uint64_t *full_rw_passes);   // Cumulative attachment load / store bytes, cumulative number of full load-store passes
  uint64_t mtl_udc_saved_bytes(void);                                      // Write-back bytes actually saved by DM_NVN_UNWRITTEN_DC
  int mtl_has_window(void);
@@ -297,21 +312,18 @@ index e2af98a..ceb07c2 100644
  int mtl_link_active(void);
  int mtl_link_wait_tick(int vsyncs, uint64_t timeout_ns);   // vsyncs = the game's present interval
 diff --git a/dm/gfx/tools/c1_guard.py b/dm/gfx/tools/c1_guard.py
-index e7a50ab..0b72cda 100755
+index 2c97b14..9ca7772 100755
 --- a/dm/gfx/tools/c1_guard.py
 +++ b/dm/gfx/tools/c1_guard.py
-@@ -7,8 +7,10 @@
+@@ -7,6 +7,7 @@
  # Literals, & K, % K, >> K, min, max, clamp and casts bound a value; inputs, buffer reads and anything not understood are unbounded. Every stage's c1 counts (vp_, fp_, cp_, gp_ ...).
  # The first version followed only the last variable of an index and took any mask, min or clamp it met as proof: `_1 + (_2 & 3u)` with _1 read from an input passed,
  # masks wider than the data passed, and compute shaders (cp_c1) were never checked.
 +import collections
  import datetime
  import json
-+import multiprocessing
- import os
- import re
- import sys
-@@ -186,12 +188,9 @@ def c1_span(json_path):
+ import multiprocessing
+@@ -187,12 +188,9 @@ def c1_span(json_path):
  def definitions_of(source):
      """Integer temporaries written only where they are declared. A variable assigned again (a loop counter, a value merged from branches) is left out, so it reads as unbounded.
      A name may be declared more than once with the same text: vertex shaders carry a copy of the main function (main0_z, dmsh_build.py vs_depth); differing declarations are left out too"""
@@ -327,49 +339,6 @@ index e7a50ab..0b72cda 100755
      return {name: next(iter(d)) for name, d in decls.items() if len(d) == 1 and writes.get(name, 0) == counts[name]}
  
  
-@@ -200,25 +199,27 @@ def proven(index, definitions, span):
-     return span is not None and known(low, high) and low >= 0 and 16 * (high + 1) <= span
- 
- 
-+def unproven(path):
-+    """The shader key of one .metal file whose c1 reads are not all proven, or None"""
-+    with open(path, encoding="utf-8") as stream:
-+        source = stream.read()
-+    accesses = set(ACCESS.findall(source))
-+    if not accesses:
-+        return None
-+    name = os.path.basename(path)
-+    key = name[:-len("_b.metal")] if name.endswith("_b.metal") else name[:-6]
-+    definitions = definitions_of(source)
-+    span = c1_span(os.path.join(os.path.dirname(path), key + "_b.json"))
-+    return None if all(proven(index, definitions, span) for index in accesses) else key
-+
-+
- def main():
-     if len(sys.argv) != 3:
-         raise SystemExit(f"usage: {sys.argv[0]} <dmsh_b version dir> <output tsv>")
-     version_dir, output = map(os.path.abspath, sys.argv[1:])
--    keys = []
--    for name in sorted(os.listdir(version_dir)):
--        if not name.endswith(".metal"):
--            continue
--        path = os.path.join(version_dir, name)
--        with open(path, encoding="utf-8") as stream:
--            source = stream.read()
--        accesses = set(ACCESS.findall(source))
--        if not accesses:
--            continue
--        key = name[:-len("_b.metal")] if name.endswith("_b.metal") else name[:-6]
--        definitions = definitions_of(source)
--        span = c1_span(os.path.join(version_dir, key + "_b.json"))
--        if not all(proven(index, definitions, span) for index in accesses):
--            keys.append(key)
-+    paths = [os.path.join(version_dir, n) for n in sorted(os.listdir(version_dir)) if n.endswith(".metal")]
-+    with multiprocessing.Pool() as pool:   # each file on its own (in name order, as before): 3 min on one core for Echoes of Wisdom's 9,799 shaders
-+        keys = [k for k in pool.map(unproven, paths, chunksize=16) if k]
-     os.makedirs(os.path.dirname(output), exist_ok=True)
-     with open(output, "w", encoding="utf-8", newline="") as stream:
-         stamp = datetime.datetime.now().astimezone().isoformat(timespec="seconds")
 diff --git a/dm/gfx/tools/cb_extent.py b/dm/gfx/tools/cb_extent.py
 index 8ac5274..20f1671 100644
 --- a/dm/gfx/tools/cb_extent.py
@@ -406,20 +375,33 @@ index 8ac5274..20f1671 100644
          high = -1
          for index in set(reads):
 diff --git a/dm/gfx/tools/dmsh_build.py b/dm/gfx/tools/dmsh_build.py
-index 46b6f0d..a30d5c4 100644
+index a71fd8b..e012d40 100644
 --- a/dm/gfx/tools/dmsh_build.py
 +++ b/dm/gfx/tools/dmsh_build.py
 @@ -8,7 +8,8 @@
  # Build output: <key>_b.metallib, <key>_b.json (replay reflection, including drv_reads, the runtime read offsets into driver segments c0 / c2), <key>_b.metal (MSL)
  # Environment IOSOUT=dir: the same MSL also goes through dm/ios/tools/ios_metal.compile to produce an iphoneos metallib + reflection (chain_metal records the iOS compile convention)
  # Final summary: success / failure counts and the distribution of reasons; distribution of driver segment read offsets (those outside the range the replay layer can fill are listed separately)
--import ast, inspect, os, re, sys, json, struct, hashlib, shutil, subprocess, tempfile, collections, threading, concurrent.futures as cf
+-import inspect, os, re, sys, json, struct, hashlib, shutil, subprocess, tempfile, collections, threading, concurrent.futures as cf
 +import ast, inspect, os, re, sys, json, struct, hashlib, shutil, subprocess, tempfile, time, collections, threading, concurrent.futures as cf
 +TIMES = {"start": time.time()}   # when each phase ended (printed at the end: where a build spends its time)
- import dmsh_geometry
+ import dmsh_geometry, dmsh_atomic
  DM_ROOT = os.environ.get('DM_ROOT') or os.path.expanduser('~/dm-work')   # Workspace root (game files, build outputs and run artifacts are all under it)
  HOME = os.path.expanduser('~')
-@@ -38,7 +39,10 @@ XC = ['--msl', '--msl-version', '20300', '--msl-argument-buffers', '--msl-textur
+@@ -25,10 +26,10 @@ SPIRV_CROSS = dmsh_chain.SPIRV_CROSS   # the in-repo build the lock records
+ FACTS = dmsh_facts.load()
+ if not os.path.exists(dmsh_facts.TABLE): sys.exit(f'[RED] no answer table {dmsh_facts.TABLE} (it comes with the game profile; an empty table = every query answered with defaults)')
+ IOSOUT = os.environ.get('IOSOUT')   # destination for requested iOS libraries (iphoneos metallib + reflection)
+-# Which metallibs this run builds: DMSH_TARGETS=mac,ios (default: both when IOSOUT is set, else mac). The Mac
++# Which metallibs this run builds: DMSH_TARGETS=mac,ios (default: both when IOSOUT is set, iOS alone off a Mac, else mac). The Mac
+ # sources and reflection are written even when 'mac' is left out (the profile's c1_full / cb_extent tables are
+ # made from them), so an iOS-only build skips only the macOS compile, about half of the Metal work.
+-TARGETS = {t.strip() for t in (os.environ.get('DMSH_TARGETS') or ('mac,ios' if IOSOUT else 'mac')).split(',') if t.strip()}
++TARGETS = {t.strip() for t in (os.environ.get('DMSH_TARGETS') or (('mac,ios' if sys.platform == 'darwin' else 'ios') if IOSOUT else 'mac')).split(',') if t.strip()}   # off a Mac, an iOS build makes only the iOS ones
+ if not TARGETS or not TARGETS <= {'mac', 'ios'}: sys.exit(f'[RED] DMSH_TARGETS takes mac and/or ios: {",".join(sorted(TARGETS)) or "empty"}')
+ if 'ios' in TARGETS and not IOSOUT: sys.exit('[RED] DMSH_TARGETS asks for iOS libraries without IOSOUT')
+ if 'ios' not in TARGETS: IOSOUT = None   # every side library, cache, cleanup and stamp follows the same selection
+@@ -46,7 +47,10 @@ XC = ['--msl', '--msl-version', '20300', '--msl-argument-buffers', '--msl-textur
  # and its saturation gives 0, as Metal's precise:: functions (IEEE fmin / fmax) do on every GPU. The M4 Pro's fast ones happen to agree, an A20 Pro's do not: Super Mario Galaxy 2's
  # GX lighting takes max(0, NaN) from light directions left at zero, and the half of Mario its fill light faces came out white on the iPhone (GitHub issue 72; vk_shaders.py PRECISE)
  def precise(msl): return re.sub(r'\bfast::(min|max|clamp)\(', r'precise::\1(', msl)
@@ -431,20 +413,20 @@ index 46b6f0d..a30d5c4 100644
  CAS_LOCKS, CAS_LOCKS_GUARD = {}, threading.Lock()
  PRE_STATS = collections.Counter()
  # -fpreserve-invariance: vertex positions are marked [[invariant]], but without this flag Metal does not promise that two different shaders compute the same expression to the same value; on Maxwell the same multiply-adds always agree.
-@@ -48,6 +52,12 @@ MAC_RECORD = ' '.join(MAC_METAL) + '; xcrun -sdk macosx metallib'
+@@ -62,6 +66,12 @@ METAL_FP = dmsh_mtlcache.compiler_id('macosx') + ('\0iphoneos\0' + dmsh_mtlcache
  def mac_compile(msl, air, lib):   # same interface as ios_metal.compile
      subprocess.run([*MAC_METAL, msl, '-o', air], check=True)
      subprocess.run(['xcrun', '-sdk', 'macosx', 'metallib', air, '-o', lib], check=True)
-+# Mac libraries only where a Mac host runs them: an iOS build elsewhere (Linux, Windows) makes only the iOS ones. The Mac output folder keeps the sources and reflection
++# Mac libraries only for the 'mac' target (DMSH_TARGETS; not by default off a Mac): the Mac output folder keeps the sources and reflection either way
 +# (c1_guard.py, cb_extent.py and vs_pad read those)
-+MAC_LIBS = sys.platform == 'darwin' or not IOSOUT
++MAC_LIBS = 'mac' in TARGETS
 +def lib_dirs(): return [('mac', out)] * MAC_LIBS + ([('ios', IOSOUT)] if IOSOUT else [])
 +def compile_libs(msl, stem):   # msl → <stem>.metallib in each target's folder, through the compile cache; raises CalledProcessError as a compile does
 +    for target, d in lib_dirs(): MTL.compile(target, msl, os.path.join(d, stem + '.metallib'))
  # The NVN driver's constant segments have one layout in every game (NVN 53 and 55 drivers, SDK 6 to 21: the handles of every shader of every profile fit it); nvn_mtl.m fills them the same way at run time.
  #   c2 0x20 + 8 r: handles bound with nvnCommandBufferBindTexture (combined texture and sampler), slot r. The driver has 32 such slots, but a game may bind higher ones, whose words lie in the
  #     image table (Hades II binds slot 34, at 0x130, and no image), so a texture instruction's handle anywhere below the separate texture table names a combined slot. In the image
-@@ -107,60 +117,62 @@ def shader_key(key, name, rec):
+@@ -114,62 +124,63 @@ def shader_key(key, name, rec):
  def pair_keyed(digest, pixel_digests):   # a vertex shader's key with its pixel shaders' keys (vs_pad)
      return hashlib.sha256((digest + '\0' + ','.join(pixel_digests)).encode()).hexdigest()
  
@@ -453,19 +435,20 @@ index 46b6f0d..a30d5c4 100644
 -
 -def cache_outputs(key, digest, cached=False):
 -    root = cache_path(digest); files = {}
--    for label, directory, names in (
--            ('mac', out, [key + '_b.metallib', key + '_b.metal', key + '_b.json']),
--            ('ios', IOSOUT, [key + '_b.metallib', key + '_b.json'])):
-+GEO = ('_bg0', '_bg1', '_bg2', '_bg3', '_bg4', '_bgv')
++GEO = ('_bg0', '_bg1', '_bg2', '_bg3', '_bg4', '_bgv', '_bl0', '_bl1', '_bl3')
 +def cache_outputs(key):
 +    """The outputs of a built shader to keep, per folder: sources and reflection (its libraries come back through the compile cache), or None when it has no reflection"""
 +    files = {}
-+    for label, directory in (('mac', out), ('ios', IOSOUT)):
+     for label, directory in (('mac', out), ('ios', IOSOUT)):
          if not directory: continue
+-        # fin(), paired vertex padding and the profile tables also need these on an iOS-only cache hit.
+-        required = [key + '_b.json'] + ([key + '_b.metal'] if label == 'mac' else [])
+-        if label in TARGETS: required.append(key + '_b.metallib')
 -        base = os.path.join(root, label) if cached else directory
--        names += [key + s + ext for s in ('_bg0', '_bg1', '_bg2', '_bg3', '_bg4', '_bgv') for ext in ('.metallib', '.json', '.metal') if label == 'mac' or ext != '.metal']
+-        names = required + [key + s + ext for s in ('_bg0', '_bg1', '_bg2', '_bg3', '_bg4', '_bgv', '_bl0', '_bl1', '_bl3') for ext in ('.metallib', '.json', '.metal')
+-                            if (label == 'mac' or ext != '.metal') and (ext != '.metallib' or label in TARGETS)]
 -        found = [n for n in names if os.path.exists(os.path.join(base, n))]
--        if key + '_b.metallib' not in found or key + '_b.json' not in found: return None
+-        if not all(n in found for n in required): return None
 +        names = [key + s + ext for s in ('_b',) + GEO for ext in ('.json', '.metal') if label == 'mac' or ext == '.json']
 +        found = [n for n in names if os.path.exists(os.path.join(directory, n))]
 +        if key + '_b.json' not in found: return None
@@ -482,7 +465,8 @@ index 46b6f0d..a30d5c4 100644
 -        for name in names:
 -            src = os.path.join(root, label, name); dst = os.path.join(directory, name)
 +    e = STORE.lookup('shader', digest)
-+    if not e or key + '_b.json' not in e.get('mac', {}) or (IOSOUT and key + '_b.json' not in e.get('ios', {})): return False
++    # the Mac reflection and source (the libraries are compiled from it; fin(), paired vertex padding and the profile tables read them), and the iOS reflection when it builds iOS
++    if not e or not {key + '_b.json', key + '_b.metal'} <= e.get('mac', {}).keys() or (IOSOUT and key + '_b.json' not in e.get('ios', {})): return False
 +    for label, directory in (('mac', out), ('ios', IOSOUT)):
 +        if not directory: continue
 +        for name, h in e[label].items():
@@ -528,10 +512,10 @@ index 46b6f0d..a30d5c4 100644
 +            src = os.path.join(directory, name)
              if name.endswith('.json'):
 -                src = os.path.join(out if label == 'mac' else IOSOUT, name)
--                value = json.load(open(src)); value.pop('fetch', None); value.pop('vin', None)   # both side libraries are made again from the restored MSL (fetch_finish, vin_finish)
+-                value = json.load(open(src)); value.pop('fetch', None); value.pop('vin', None); value.pop('pull', None)   # the side libraries are made again from the restored MSL (fetch_finish, vin_finish, pull_finish)
 -                atomic_json(os.path.join(d, name), value)
 -    atomic_json(cache_meta_path(key), {'digest': digest, 'rule_fp': rule_fp, 'code_fp': code_fp})
-+                j = json.load(open(src)); j.pop('fetch', None); j.pop('vin', None)   # both side libraries are made again from the restored MSL (fetch_finish, vin_finish)
++                j = json.load(open(src)); j.pop('fetch', None); j.pop('vin', None); j.pop('pull', None)   # the side libraries are made again from the restored MSL (fetch_finish, vin_finish, pull_finish)
 +                value[label][name] = STORE.put(json.dumps(j, ensure_ascii=False, indent=1).encode())
 +            else: value[label][name] = STORE.put_file(src)
 +    STORE.set('shader', digest, value)
@@ -539,7 +523,7 @@ index 46b6f0d..a30d5c4 100644
  
  BF_STATS = collections.Counter()
  
-@@ -172,24 +184,15 @@ def bf_digest(msl, key):
+@@ -182,24 +193,15 @@ def bf_digest(msl, key):
      h.update(b'\0bf-want\0' + (b'1' if key in BF_WANT else b'0'))
      return h.hexdigest()
  
@@ -547,10 +531,10 @@ index 46b6f0d..a30d5c4 100644
 -
 -def bf_cache_restore(key, digest, fmeta, fmsl):
 -    root = bf_cache_root(digest)
--    names = ['metal', 'mac.metallib'] + (['ios.metallib'] if IOSOUT else [])
+-    names = ['metal'] + (['mac.metallib'] if 'mac' in TARGETS else []) + (['ios.metallib'] if IOSOUT else [])
 -    if not all(os.path.exists(os.path.join(root, n)) for n in names): return False
 -    clone(os.path.join(root, 'metal'), fmsl)
--    clone(os.path.join(root, 'mac.metallib'), os.path.join(out, key + '_bf.metallib'))
+-    if 'mac' in TARGETS: clone(os.path.join(root, 'mac.metallib'), os.path.join(out, key + '_bf.metallib'))
 -    if IOSOUT: clone(os.path.join(root, 'ios.metallib'), os.path.join(IOSOUT, key + '_bf.metallib'))
 +def bf_cache_restore(key, digest, fmeta, fmsl):   # the variant's source from the store, its libraries through the compile cache
 +    e = STORE.lookup('variant', digest)
@@ -563,22 +547,23 @@ index 46b6f0d..a30d5c4 100644
 -def bf_cache_publish(digest, fmsl, maclib, ioslib, fmeta):
 -    root = bf_cache_root(digest); os.makedirs(root, exist_ok=True)
 -    clone(fmsl, os.path.join(root, 'metal'))
--    clone(maclib, os.path.join(root, 'mac.metallib'))
+-    if maclib: clone(maclib, os.path.join(root, 'mac.metallib'))
 -    if IOSOUT: clone(ioslib, os.path.join(root, 'ios.metallib'))
 -    atomic_json(os.path.join(root, 'fetch.json'), fmeta)
 +def bf_cache_publish(digest, fmsl): STORE.set('variant', digest, {'metal': STORE.put_file(fmsl)})
  
  def write_refl(key, refl):
-     for d, rec in ((out, MAC_RECORD),) + (((IOSOUT, ios_metal.RECORD),) if IOSOUT else ()):
-@@ -215,20 +218,14 @@ def fetch_finish(key, src, refl):
+     for target, d in (('mac', out),) + ((('ios', IOSOUT),) if IOSOUT else ()):
+@@ -224,21 +226,14 @@ def fetch_finish(key, src, refl):
              if not bf_cache_restore(key, digest, fmeta, fmsl):
                  BF_STATS['miss'] += 1
                  open(fmsl, 'w').write(fv)
--                fair = fmsl[:-6] + '.air'; flib = os.path.join(out, key + '_bf.metallib')
+-                fair = fmsl[:-6] + '.air'; flib = os.path.join(out, key + '_bf.metallib') if 'mac' in TARGETS else None
 -                try:
--                    tmp_flib = flib + '.tmp-' + str(os.getpid())
--                    mac_compile(fmsl, fair, tmp_flib)
--                    os.replace(tmp_flib, flib)
+-                    if flib:
+-                        tmp_flib = flib + '.tmp-' + str(os.getpid())
+-                        mac_compile(fmsl, fair, tmp_flib)
+-                        os.replace(tmp_flib, flib)
 -                    ilib = None
 -                    if IOSOUT:
 -                        ilib = os.path.join(IOSOUT, key + '_bf.metallib')
@@ -596,7 +581,18 @@ index 46b6f0d..a30d5c4 100644
          finally:
              for path in (fmsl, fmsl[:-6] + '.air', fmsl[:-6] + '.ios.air'):
                  try: os.unlink(path)
-@@ -243,7 +240,7 @@ def vin_finish(key, full, refl):
+@@ -267,9 +262,7 @@ def pull_finish(key, full, refl):
+         if info != 'no stage input': print(f'[RED] {key}: no pulling library ({info}): its pipelines are always built for the draw\'s vertex layout', flush=True)
+         drop(); return refl
+     msl = os.path.join(w, key + '_bp.metal'); open(msl, 'w').write(v)
+-    try:
+-        if 'mac' in TARGETS: MTL.compile('mac', msl, libs[0])
+-        if IOSOUT: MTL.compile('ios', msl, libs[1])
++    try: compile_libs(msl, key + '_bp')
+     except subprocess.CalledProcessError as e:
+         PULL_STATS['failed'] += 1; print(f'[RED] {key}: the pulling library does not compile ({str(e)[:120]}): its pipelines are always built for the draw\'s vertex layout', flush=True)
+         drop(); return refl
+@@ -284,7 +277,7 @@ def vin_finish(key, full, refl):
      """The shadow-input library <key>_bv of a vertex shader with integer inputs (dmsh_vin.py), compiled through the MSL-keyed Metal cache; reflection 'vin' names its entry points and
      the shadow attribute indices. Other shaders get none (stale libraries removed). Changes refl; the caller writes it"""
      if refl['stage'] != 'vs': return refl
@@ -605,18 +601,18 @@ index 46b6f0d..a30d5c4 100644
      refl.pop('vin', None)
      def drop():
          for p in libs:
-@@ -255,9 +252,7 @@ def vin_finish(key, full, refl):
+@@ -296,9 +289,7 @@ def vin_finish(key, full, refl):
          drop(); return refl
      VIN_STATS['generated'] += 1
      msl = os.path.join(w, key + '_bv.metal'); open(msl, 'w').write(v)
 -    try:
--        MTL.compile('mac', msl, libs[0])
+-        if 'mac' in TARGETS: MTL.compile('mac', msl, libs[0])
 -        if IOSOUT: MTL.compile('ios', msl, libs[1])
 +    try: compile_libs(msl, key + '_bv')
      except subprocess.CalledProcessError as e:
          VIN_STATS['failed'] += 1; print(f'[RED] {key}: the shadow-input library does not compile ({str(e)[:120]}): its integer inputs keep the CPU conversion', flush=True)
          drop(); return refl
-@@ -376,7 +371,7 @@ def raster_facts(stage, src):
+@@ -442,7 +433,7 @@ def raster_facts(stage, src):
      body = re.search(r'\bvertex\s+\w+\s+\w+\s*\(.*?\)\s*\{(.*)\}\s*$', src, re.S)   # the main function is the last function in the file
      if not body or re.search(r'\b(if|for|while|switch|do)\b|clip_distance|ClipDistance', body.group(1)): return {'pos_attr': -1}
      b = body.group(1)
@@ -625,7 +621,7 @@ index 46b6f0d..a30d5c4 100644
      var = {m.group(1): (m.group(2), m.group(3)) for m in re.finditer(r'float\s+(_\w+)\s*=\s*in\.(\w+)\.([xyzw]);', b)}
      last = {}
      for m in re.finditer(r'out\.gl_Position\.([xyzw])\s*=\s*([^;]+);', b): last[m.group(1)] = m.group(2).strip()
-@@ -529,26 +524,48 @@ CODE_FP = hashlib.sha256(source_without_rule_bodies().encode() + b''.join(b'\0'
+@@ -598,26 +589,48 @@ CODE_FP = hashlib.sha256(source_without_rule_bodies() + b''.join(b'\0' + dmsh_ch
  TOOL_FP = tool_fingerprint().encode()
  
  _CAST = ('as_type<int>(', 'as_type<uint>(')
@@ -681,7 +677,7 @@ index 46b6f0d..a30d5c4 100644
                  l2s = body.rfind('\n', 0, o.start()) + 1; l2e = body.find('\n', o.end())
                  if re.match(r'\s*[\w.\[\]]+\s*=\s*%s;$' % re.escape(v), body[l2s:l2e]): continue   # plain copy: the bit pattern is the same under either declaration
                  bad = True; break
-@@ -628,6 +645,7 @@ def gs_slice(spv):
+@@ -708,6 +721,7 @@ def gs_slice(spv):
      (loc, comp), = layer
      return {'loc': loc, 'comp': comp}
  
@@ -689,7 +685,7 @@ index 46b6f0d..a30d5c4 100644
  def vs_layer_entry(full):
      """Layer entry points for a vertex shader that writes integer bits taken from the instance index into an output component (Unreal Engine 4.18's WriteToSliceMainVS: the slice = instance −
      base instance + its first slice, DRAGON QUEST XI S 7ceb7898171a9ae9). main0_l and main0_lz are main0 and main0_z writing that component as the layer (render_target_array_index), without
-@@ -646,8 +664,8 @@ def vs_layer_entry(full):
+@@ -726,8 +740,8 @@ def vs_layer_entry(full):
          a = re.search(rf'\bvertex\s+main0_out\s+{ep}\s*\(', full)
          if not a: return full, None
          b, depth = full.find('{', a.end()), 0
@@ -700,7 +696,7 @@ index 46b6f0d..a30d5c4 100644
              if not depth: break
          fn = full[a.start():e + 1].replace('main0_out', 'main0l_out').replace(f' {ep}(', f' {new}(', 1)
          fn = re.sub(r'\n    out\.gl_PointSize = [^;\n]*;', '', fn)
-@@ -697,12 +715,32 @@ def fs_uint(src):
+@@ -777,12 +791,31 @@ def fs_uint(src):
  
  SG_OPS = {333: 'true', 334: 'pred', 335: 'pred', 336: 'true', 337: 'value', 338: 'value', 339: 'ballot', 345: 'value', 346: 'value', 347: 'value', 348: 'value'}   # OpGroupNonUniform* → its one-lane value
  SG_BUILTINS = {36: 'one', 41: 'zero', 4416: 'one4', 4417: 'one4', 4418: 'zero4', 4419: 'one4', 4420: 'zero4'}   # SubgroupSize, SubgroupLocalInvocationId, Eq / Ge / Gt / Le / Lt masks
@@ -727,28 +723,28 @@ index 46b6f0d..a30d5c4 100644
      ballot the active lanes, shuffle the first lane's value to all, and take a fast path when all agree. With a subgroup of one lane that is exact: the ballot is the lane's own bit, shuffles and
      broadcasts return the lane's own value, all / any are the predicate, all-equal and elect are true, the lane ID is 0, the size 1 and the masks follow. The SPIR-V is rewritten that way
      (the builtin variables, their decorations and the subgroup capabilities removed). → True when rewritten, False when there is nothing to do or an operation it does not cover"""
--    d = open(path, 'rb').read(); words = list(struct.unpack(f'<{len(d) // 4}I', d)); hdr, ins, i = words[:5], [], 5
+-    with open(path, 'rb') as f: d = f.read()
 +    d = open(path, 'rb').read()
 +    if not _sg_maybe(d): return False   # nothing to do (most vertex shaders), known without decoding every instruction
-+    words = list(struct.unpack(f'<{len(d) // 4}I', d)); hdr, ins, i = words[:5], [], 5
+     words = list(struct.unpack(f'<{len(d) // 4}I', d)); hdr, ins, i = words[:5], [], 5
      while i < len(words): n = words[i] >> 16; ins.append(words[i:i + n]); i += n
      op = lambda x: x[0] & 0xffff
-     if not any(op(x) in SG_OPS or (op(x) == 71 and len(x) > 3 and x[2] == 11 and x[3] in SG_BUILTINS) for x in ins): return False
-@@ -775,11 +813,9 @@ def geometry_finish(key, w, j, c1):
+@@ -865,11 +898,9 @@ def geometry_finish(key, w, j, c1):
                  'bindings': reflect(key, 'gs', src, res), 'vertex_inputs': [], 'raster': {}}
          def save(suffix, text, meta):
              path = os.path.join(out, key + suffix + '.metal'); open(path, 'w').write(text)
--            MTL.compile('mac', path, os.path.join(out, key + suffix + '.metallib'))
-+            compile_libs(path, key + suffix)
-             atomic_json(os.path.join(out, key + suffix + '.json'), dict(meta, chain_metal=MAC_RECORD))
+-            if 'mac' in TARGETS: MTL.compile('mac', path, os.path.join(out, key + suffix + '.metallib'))
+-            atomic_json(os.path.join(out, key + suffix + '.json'), MTL.with_compiler('mac', meta))
 -            if IOSOUT:
 -                MTL.compile('ios', path, os.path.join(IOSOUT, key + suffix + '.metallib'))
--                atomic_json(os.path.join(IOSOUT, key + suffix + '.json'), dict(meta, chain_metal=ios_metal.RECORD))
+-                atomic_json(os.path.join(IOSOUT, key + suffix + '.json'), MTL.with_compiler('ios', meta))
++            compile_libs(path, key + suffix)
++            atomic_json(os.path.join(out, key + suffix + '.json'), dict(meta, chain_metal=MAC_RECORD))
 +            if IOSOUT: atomic_json(os.path.join(IOSOUT, key + suffix + '.json'), dict(meta, chain_metal=ios_metal.RECORD))
          save('_bg' + str(t), src, refl)
-         if t == 0:
-             base = {**refl, 'key': key + '_b'}
-@@ -797,9 +833,18 @@ def geometry_finish(key, w, j, c1):
+         # Passthrough input without adjacency: a lean kernel the host can pair with the game's own vertex shader (dmsh_geometry.lean)
+         if dmsh_geometry.passthrough(code) and t in (0, 1, 3):
+@@ -897,9 +928,18 @@ def geometry_finish(key, w, j, c1):
      return 'ok', '', base
  
  
@@ -757,7 +753,7 @@ index 46b6f0d..a30d5c4 100644
 +    """A vertex shader's first MSL (one-lane subgroups, spirv-cross) and the inputs it uses only as integers that its job does not declare yet: → (key, error or None, extra).
 +    finish takes it from there (pre); the shaders with extra inputs are translated again in batches between the two (one translator start per batch, not per shader)"""
 +    spv_single_lane(os.path.join(w, key + '.spv'))
-+    r = subprocess.run(['spirv-cross', *XC, os.path.join(w, key + '.spv'), '--output', os.path.join(w, key + '.metal')], capture_output=True, text=True)
++    r = subprocess.run([SPIRV_CROSS, *dmsh_atomic.cross_args(XC, os.path.join(w, key + '.spv')), os.path.join(w, key + '.spv'), '--output', os.path.join(w, key + '.metal')], capture_output=True, text=True)
 +    if r.returncode: return key, r.stderr.strip()[:160], {}
 +    return key, None, {l: t for l, t in int_inputs(open(os.path.join(w, key + '.metal')).read()).items() if l not in j['attr']}
 +
@@ -767,23 +763,23 @@ index 46b6f0d..a30d5c4 100644
 -    msl = os.path.join(w, key + '.metal'); lib = os.path.join(out, key + '_b.metallib')
 +    msl = os.path.join(w, key + '.metal')
      if j['stage'] == 'gs':   # keep the layer-only fold; other geometry runs as compute
-         s = gs_slice(os.path.join(w, key + '.spv'))
+         s = gs_slice(os.path.join(w, key + '.spv')) if not j.get('tf') else None
          if s:
-@@ -809,11 +854,17 @@ def finish(key, w, j, c1):
+@@ -909,11 +949,17 @@ def finish(key, w, j, c1):
              return 'ok', '', refl
          try: return geometry_finish(key, w, j, c1)
          except (ValueError, subprocess.CalledProcessError) as e: return 'geometry failed', str(e)[:160], None
 -    if j['stage'] == 'vs': spv_single_lane(os.path.join(w, key + '.spv'))   # one-lane subgroups (see spv_single_lane)
--    r = subprocess.run(['spirv-cross', *XC, os.path.join(w, key + '.spv'), '--output', msl], capture_output=True, text=True)
+-    r = subprocess.run([SPIRV_CROSS, *dmsh_atomic.cross_args(XC, os.path.join(w, key + '.spv')), os.path.join(w, key + '.spv'), '--output', msl], capture_output=True, text=True)
 -    if r.returncode: return 'MSL failed', r.stderr.strip()[:160], None
 +    if pre not in (None, 'first', 'again'): return ('translation failed' if pre.startswith('integer-input') else 'MSL failed'), pre, None
 +    if pre == 'again':   # vs_first found integer inputs, and the batch translated the shader again with them: the second pass
 +        spv_single_lane(os.path.join(w, key + '.spv'))
-+        r = subprocess.run(['spirv-cross', *XC, os.path.join(w, key + '.spv'), '--output', msl], capture_output=True, text=True)
++        r = subprocess.run([SPIRV_CROSS, *dmsh_atomic.cross_args(XC, os.path.join(w, key + '.spv')), os.path.join(w, key + '.spv'), '--output', msl], capture_output=True, text=True)
 +        if r.returncode: return 'MSL failed', r.stderr.strip()[:160], None
 +    elif pre is None:
 +        if j['stage'] == 'vs': spv_single_lane(os.path.join(w, key + '.spv'))   # one-lane subgroups (see spv_single_lane)
-+        r = subprocess.run(['spirv-cross', *XC, os.path.join(w, key + '.spv'), '--output', msl], capture_output=True, text=True)
++        r = subprocess.run([SPIRV_CROSS, *dmsh_atomic.cross_args(XC, os.path.join(w, key + '.spv')), os.path.join(w, key + '.spv'), '--output', msl], capture_output=True, text=True)
 +        if r.returncode: return 'MSL failed', r.stderr.strip()[:160], None
      src = open(msl).read()
 -    if j['stage'] == 'vs':   # second pass: re-translate with inputs that are only used as integers reported as uint (see int_inputs)
@@ -791,36 +787,34 @@ index 46b6f0d..a30d5c4 100644
          extra = {l: t for l, t in int_inputs(src).items() if l not in j['attr']}
          if extra:
              j['attr'].update(extra); jp = os.path.join(w, f'job1_{key}.json'); json.dump([j], open(jp, 'w'))
-@@ -842,16 +893,14 @@ def finish(key, w, j, c1):
+@@ -946,14 +992,12 @@ def finish(key, w, j, c1):
+         open(msl, 'w').write(full)
      fu, fmask = fs_uint(src) if j['stage'] == 'ps' else (None, 0)   # the integer-output entry points (see fs_uint); the analysis below uses the source with only main0
      if fu: plain = src; open(msl, 'w').write(fu)
-     res = json.load(open(os.path.join(w, key + '.res.json')))
--    try: MTL.compile('mac', msl, lib)   # MSL identical to one compiled before takes that library (dmsh_mtlcache.py)
+-    def compile_targets():   # the selected targets from the same MSL (MSL identical to one compiled before takes that library, dmsh_mtlcache.py)
+-        if 'mac' in TARGETS: MTL.compile('mac', msl, lib)
+-        if 'ios' in TARGETS and IOSOUT: MTL.compile('ios', msl, os.path.join(IOSOUT, key + '_b.metallib'))
+-    try: compile_targets()
 +    # each target's library (iOS: the same MSL through iOS's single compile convention, dm/ios/tools/ios_metal.py); MSL identical to one compiled before takes that library (dmsh_mtlcache.py)
 +    try: compile_libs(msl, key + '_b')
      except subprocess.CalledProcessError as e:
          if not lay and not fu: return 'metal failed', str(e)[:160], None
          open(msl, 'w').write(plain); lay = fu = None   # the layer and integer-output entry points are extras: a library that does not build with them is built without
--        try: MTL.compile('mac', msl, lib)
+-        try: compile_targets()
 +        try: compile_libs(msl, key + '_b')
          except subprocess.CalledProcessError as e: return 'metal failed', str(e)[:160], None
      clone(msl, os.path.join(out, key + '_b.metal'))
--    if IOSOUT:   # iOS: the same MSL goes through iOS's single compile convention (dm/ios/tools/ios_metal.py) to produce an iphoneos metallib
--        try: MTL.compile('ios', msl, os.path.join(IOSOUT, key + '_b.metallib'))
--        except subprocess.CalledProcessError as e: return 'iOS metal failed', str(e)[:160], None
      entry = re.search(r'(vertex|fragment|kernel)\s+\S+\s+(\w+)\s*\(', src)
-     dr = drv_reads(src)
-     refl = {'key': key + '_b', 'route': 'B', 'chain': CHAIN, 'dm_ctl': key, 'source': f'{name}#{k}', 'pc_paired': pc_of[key], 'stage': j['stage'],
-@@ -860,7 +909,7 @@ def finish(key, w, j, c1):
+@@ -965,7 +1009,7 @@ def finish(key, w, j, c1):
              **({'entry_layer': 'main0_l', 'entry_layer_z': 'main0_lz', 'layer_from': lay} if lay else {}), **({'entry_u': 'main0_u'} if fu else {}), **({'entry_m': 'main0_m', 'uint_mask_m': fmask} if fu and fmask else {}),
              'threadgroup_size': j.get('local'), 'c1': c1.hex(), 'notes': res['notes'] + (['not in the answer table, queries use defaults'] if j.get('no_facts') else []), 'drv_reads': dr, 'drv_unfillable': unfillable(dr),
              'bindings': reflect(key, j['stage'], src, res),
 -            'vertex_inputs': [{'location': int(m.group(2)), 'msl_type': m.group(1)} for m in re.finditer(r'(\w+)\s+\w+\s*\[\[attribute\((\d+)\)\]\]', src)],
 +            'vertex_inputs': [{'location': l, 'msl_type': t} for t, _, l in attribute_decls(src)],
              'raster': raster_facts(j['stage'], src), 'vs_pad': pad}
-     if j['stage'] == 'vs': vin_finish(key, open(msl).read(), refl)   # the shadow-input library (see dmsh_vin.py), from the source with every entry point
+     if j['stage'] == 'vs': full = open(msl).read(); vin_finish(key, full, refl); pull_finish(key, full, refl)   # the shadow-input and pulling libraries (dmsh_vin.py, dmsh_pull.py), from the source with every entry point
      write_refl(key, refl)
-@@ -881,7 +930,29 @@ for _d in [out] + ([IOSOUT] if IOSOUT else []):
+@@ -986,7 +1030,29 @@ for _d in [out] + ([IOSOUT] if IOSOUT else []):
          if _m and (not want or _m.group(1) in want): os.unlink(os.path.join(_d, _n))
      if (not want or STAMP_BEFORE != INPUTS) and os.path.exists(os.path.join(_d, dmsh_chain.STAMP)): os.unlink(os.path.join(_d, dmsh_chain.STAMP))
  w = tempfile.mkdtemp(prefix='dmsh_', dir=os.environ.get('WORK'))
@@ -851,7 +845,7 @@ index 46b6f0d..a30d5c4 100644
  # first take the libraries earlier chain versions left on disk: the b-*/ beside the output (iOS: the folder of the same name) and the roots DMSH_PREFILL lists
  for _spec in [cache_root + ('=' + os.path.dirname(IOSOUT) if IOSOUT else '')] + [x for x in os.environ.get('DMSH_PREFILL', '').split(os.pathsep) if x]:
      _mac, _, _ios = _spec.partition('=')
-@@ -904,33 +975,93 @@ for key in keys:
+@@ -1009,52 +1075,111 @@ for key in keys:
  for key in keys:
      name, rec = recs[key]
      rule_fps[key] = hashlib.sha256(shader_rule_source(name) + ','.join(sorted(PAIRS.get(key, ()))).encode()).hexdigest()   # the vertex shader must be rebuilt when its pairs change (vs_pad)
@@ -934,7 +928,7 @@ index 46b6f0d..a30d5c4 100644
 +        # A built pixel shader hands fetch_finish its source without the integer-output entry point (finish: fs_uint appends "\nstruct main0_out_u ..." to it), a restored one
 +        # read it back with it: the variant made from that failed to compile (main0_u's body names outputs the variant renames), 4,797 of Mario Kart 8 Deluxe's on every rebuild
 +        if refl['stage'] == 'ps' and refl.get('entry_u'): src = src.split('\nstruct main0_out_u\n', 1)[0]
-         if refl['stage'] == 'vs': write_refl(key, vin_finish(key, src, refl))
+         if refl['stage'] == 'vs': write_refl(key, pull_finish(key, src, vin_finish(key, src, refl)))
          return key, 'ok', '', fetch_finish(key, src, refl)
      if key in xerr or not os.path.exists(os.path.join(w, key + '.spv')): return key, 'translation failed', xerr.get(key, 'no spv'), None
 -    result = (key,) + finish(key, w, jobs[key], c1s[key])
@@ -943,15 +937,36 @@ index 46b6f0d..a30d5c4 100644
      return result
 -with cf.ThreadPoolExecutor(NJ) as ex:   # two phases: paired vertex shaders read their pixel shaders' MSL (vs_pad), so they go last
 -    res = list(ex.map(fin, [k for k in keys if k not in PAIRS])) + list(ex.map(fin, [k for k in keys if k in PAIRS]))
--shutil.rmtree(w, ignore_errors=True)
 +PROGRESS.phase('MSL and libraries', len(keys))
 +# two phases: paired vertex shaders read their pixel shaders' MSL (vs_pad), so they go last
 +res = pmap(fin, [k for k in keys if k not in PAIRS]) + pmap(fin, [k for k in keys if k in PAIRS])
 +TIMES['MSL, variants and libraries'] = time.time()
+ # Passthrough geometry as mesh shaders (dmsh_mesh.py): <vertex key>_<geometry key>_m3 for each pair in the profile's geo_mesh.tsv whose two libraries exist; the host
+ # draws a lean triangle-list geometry draw with it when its pair has one, and through the compute path otherwise (nvn_geometry.inc geo_mesh_draw)
+ MESH_STATS = collections.Counter()
+ def mesh_finish(pair):
+     vk, gk = pair
+     srcs = [os.path.join(out, n) for n in (vk + '_b.metal', gk + '_bl3.metal', gk + '_bl3.json')]
+-    libs = [os.path.join(out, f'{vk}_{gk}_m3.metallib')] + ([os.path.join(IOSOUT, f'{vk}_{gk}_m3.metallib')] if IOSOUT else [])
+     if not all(os.path.exists(p) for p in srcs): MESH_STATS['missing a library'] += 1; return
+     try: msl = dmsh_mesh.compose(open(srcs[0]).read(), open(srcs[1]).read(), json.load(open(srcs[2]))['geometry']['capture_reads'])
+     except ValueError as e: MESH_STATS['not composed'] += 1; print(f'[RED] mesh {vk} {gk}: {e}', flush=True); return
+     path = os.path.join(w, f'{vk}_{gk}_m3.metal'); open(path, 'w').write(msl)
+     try:
+-        if 'mac' in TARGETS: MTL.compile('mac', path, libs[0])
+-        if IOSOUT: MTL.compile('ios', path, libs[1])
++        compile_libs(path, f'{vk}_{gk}_m3')
+         MESH_STATS['built'] += 1
+     except subprocess.CalledProcessError as e: MESH_STATS['failed to compile'] += 1; print(f'[RED] mesh {vk} {gk}: does not compile ({str(e)[:120]})', flush=True)
+ _mesh = GAME.table('geo_mesh.tsv')
+ if _mesh.exists():
+     with cf.ThreadPoolExecutor(NJ) as ex: list(ex.map(mesh_finish, [tuple(ln.split()[:2]) for ln in _mesh.read_text().splitlines() if ln.strip() and not ln.startswith('#')]))
+-shutil.rmtree(w, ignore_errors=True)
++TIMES['mesh libraries'] = time.time()
  st = collections.Counter(r[1] for r in res)
  print(f'shaders {len(res)}: ok {st["ok"]}, ' + ', '.join(f'{k} {v}' for k, v in st.items() if k != 'ok'))
  print(f'shader cache: hit {PRE_STATS["hit"]}, rebuilt {PRE_STATS["miss"]}')
-@@ -960,8 +1091,30 @@ json.dump([{'key': r[0], 'st': r[1], 'err': r[2]} for r in res], open(os.path.jo
+@@ -1089,8 +1214,30 @@ json.dump([{'key': r[0], 'st': r[1], 'err': r[2]} for r in res], open(os.path.jo
  if not want:   # a full build: the stamp, then the c1 guard and uniform read extent tables from these Mac outputs, into the profile folder (the host takes them only beside this stamp)
      for _d in [out] + ([IOSOUT] if IOSOUT else []): dmsh_chain.write_stamp(_d, GAME.id, INPUTS)
      print(f'library stamp: game {GAME.id}, inputs {INPUTS}', flush=True)
@@ -984,10 +999,10 @@ index 46b6f0d..a30d5c4 100644
 +shutil.rmtree(w, ignore_errors=True)   # the temporary folder last: the progress file is in it until the end
 +_t = list(TIMES.values()); print('phase times: ' + ', '.join(f'{n} {b - a:.0f} s' for n, a, b in zip(list(TIMES)[1:], _t, _t[1:])) + f'; {time.time() - _t[0]:.0f} s in all', flush=True)
 diff --git a/dm/gfx/tools/dmsh_mtlcache.py b/dm/gfx/tools/dmsh_mtlcache.py
-index 6ca4323..59f6b83 100644
+index 9194305..1cc514f 100644
 --- a/dm/gfx/tools/dmsh_mtlcache.py
 +++ b/dm/gfx/tools/dmsh_mtlcache.py
-@@ -2,16 +2,17 @@
+@@ -2,15 +2,16 @@
  # Compiled-shader cache keyed by the Metal source (dmsh_build.py): a library is compiled once per (MSL text, compile convention, compiler), so a chain change
  # that leaves a shader's MSL as it was (a translator fix, a new rule for other shaders) costs that shader no Metal compile. The Metal compiler is deterministic:
  # the same MSL with the same flags gives a byte-identical metallib (checked for macOS and iOS), which is what makes reuse safe.
@@ -995,21 +1010,20 @@ index 6ca4323..59f6b83 100644
 -# the compiler's identity (metal / metallib --version without the install path, the SDK version and build) and the MSL bytes.
 +# Kept in the game's shader store (dmsh_store.py, nxnativev2's runtime/shaders: entries "mtl", digest → library), digest = sha256 over FORMAT, the target's compile convention
 +# (the record written into json chain_metal), the compiler's identity (metal / metallib --version without the install path, the SDK version and build) and the MSL bytes.
- # Filling from earlier builds: a Mac b-<chain>/ folder holds <key>_b.metal (the exact source that was compiled) beside <key>_b.metallib, and the iOS b-<chain>/ folder
- # of the same chain holds the iOS libraries of the same sources. A folder is taken only when its json chain_metal is the current convention and a fresh compile of
- # a few of its shaders (two per stage) reproduces their libraries byte for byte; each folder is read once (filled.json remembers it by its number of libraries).
+ # Filling from earlier builds: every imported library must record the current compiler identity and flags in its reflection. Legacy libraries without that identity are not imported.
+ # A fresh compile of two shaders per stage also checks their bytes. Each folder is read once per compiler identity (filled.json remembers its number of libraries).
  # Not part of the chain version (dmsh_chain.py): the cache never changes an output, it only skips recompiling one. Change FORMAT when what it stores changes.
 -import os, re, json, shutil, ctypes, hashlib, threading, subprocess, collections
 +import os, re, sys, json, shutil, ctypes, hashlib, threading, subprocess, collections
  
- FORMAT = b'dmsh_mtlcache 1'
+ FORMAT = b'dmsh_mtlcache 2'   # earlier prefill could misclassify an unsampled library from another compiler
 -_clonefile = getattr(ctypes.CDLL(None, use_errno=True), 'clonefile', None)   # APFS copy-on-write copy (no data written); elsewhere a plain copy
 +# APFS copy-on-write copy (no data written); elsewhere a plain copy (Windows has no ctypes.CDLL(None) at all)
 +_clonefile = getattr(ctypes.CDLL(None, use_errno=True), 'clonefile', None) if sys.platform == 'darwin' else None
  
  
  def clone(src, dst):
-@@ -27,15 +28,14 @@ def compiler_id(sdk):
+@@ -26,15 +27,14 @@ def compiler_id(sdk):
  
  
  class Cache:
@@ -1028,9 +1042,9 @@ index 6ca4323..59f6b83 100644
 +    def digest(self, target, src): return hashlib.sha256(self.ident[target] + b'\0' + src).hexdigest()
 +    def cached(self, target, src): e = self.store.lookup('mtl', self.digest(target, src)); return e['lib'] if e else None
  
-     def count(self, what, n=1):
-         with self.lock: self.stats[what] += n
-@@ -48,13 +48,13 @@ class Cache:
+     def with_compiler(self, target, refl):
+         return dict(refl, chain_metal=self.targets[target][1], chain_compiler=self.ident[target].hex())
+@@ -50,13 +50,13 @@ class Cache:
  
      def compile(self, target, msl, lib):
          """msl → lib for target: a clone of the library that the same source compiled to before, or a compile (then kept). Raises CalledProcessError as the compile does"""
@@ -1048,7 +1062,7 @@ index 6ca4323..59f6b83 100644
  
      def _check(self, target, d, stems, mac_dir):
          """None if folder d was built with the current convention and compiler, else why not"""
-@@ -94,9 +94,9 @@ class Cache:
+@@ -98,9 +98,9 @@ class Cache:
              if not ts: continue
              src = open(os.path.join(mac_dir, stem + '.metal'), 'rb').read()
              for t in ts:
@@ -1061,13 +1075,48 @@ index 6ca4323..59f6b83 100644
          for t, (d, have) in todo.items():
              self.count((t, 'filled'), added[t]); notes.append(f'Metal cache: {added[t]} {t} libraries added from {d} ({len(have)} there)')
          os.makedirs(self.root, exist_ok=True)
+diff --git a/dm/gfx/tools/own_compilers.py b/dm/gfx/tools/own_compilers.py
+index abd2752..617c22a 100644
+--- a/dm/gfx/tools/own_compilers.py
++++ b/dm/gfx/tools/own_compilers.py
+@@ -4,16 +4,20 @@
+ # its role remains unconfirmed. Another Metal compiler stops the build with installation instructions unless DM_ALLOW_OTHER_METAL=1 (the NSP script's --allow-other-metal).
+ # The override reports the actual compiler, leaves the lock and chain version unchanged, and uses separate shader and variant cache entries keyed by that compiler and its SDK.
+ # A missing tool, another translator or another SPIRV-Cross always fails. On the maintainer's Mac dmsh_build.py keeps the strict check. This wrapper is not part of the chain version.
++# Off macOS (Linux, Windows: dm/linux/README.md) neither compiler can be the locked build: SPIRV-Cross is built there from the same pinned release (spirv_cross_bin/build.sh's TAG) for
++# that system, and Metal is Apple's Metal Developer Tools for Windows (dm/linux/bin/xcrun), so both may differ with the note line, as DM_ALLOW_OTHER_METAL=1 lets Metal on a Mac.
+ # Usage: own_compilers.py <dmsh_build.py arguments>   (the environment as for dmsh_build.py)
+ #        own_compilers.py --check-metal              only the Metal compiler check: exit 1 with the message when it would stop the build (the NSP script runs it before its shader steps)
+ import os, re, sys, runpy, subprocess
+ HERE = os.path.dirname(os.path.abspath(__file__)); sys.path.insert(0, HERE); import dmsh_chain
++MAC = sys.platform == 'darwin'   # off macOS another SPIRV-Cross and Metal are expected (see above)
+ OWN = re.compile(r'(metal_macosx|metal_iphoneos): lock (.*) / actual (?!missing$)(.*)')   # a missing compiler still stops the build
++OWN_OFF_MAC = re.compile(r'(spirv-cross|metal_macosx|metal_iphoneos): lock (.*) / actual (?!missing$)(.*)')
+ ALLOW = 'DM_ALLOW_OTHER_METAL'
+ XCODE = 'Xcode 27.1 (macOS 26.6 or later)'   # the Xcode whose Metal compiler dmsh_chain.lock records; README.md names it too
+ strict = dmsh_chain.check_tools
+ 
+-def allowed(): return os.environ.get(ALLOW) == '1'
++def allowed(): return os.environ.get(ALLOW) == '1' or not MAC
+ 
+ def metal_version(sdk):   # as dmsh_chain.tools_now records it: the first line of metal --version, 'missing' without one
+     r = subprocess.run(['xcrun', '-sdk', sdk, 'metal', '--version'], capture_output=True, text=True)
+@@ -42,7 +46,7 @@ def check_metal():   # --check-metal: the stop message, '' when the build may go
+ def check_tools():
+     bad, own = [], []
+     for b in strict():
+-        m = OWN.fullmatch(b)
++        m = (OWN if MAC else OWN_OFF_MAC).fullmatch(b)
+         if m: own.append((m[1], m[2], m[3]))   # (lock key, tested, actual)
+         else: bad.append(b)
+     if bad: return bad
 diff --git a/dm/gfx/tools/shader_split.py b/dm/gfx/tools/shader_split.py
-index 19bf112..11a7a8a 100644
+index 79ddccb..7ba5bdd 100644
 --- a/dm/gfx/tools/shader_split.py
 +++ b/dm/gfx/tools/shader_split.py
-@@ -1321,7 +1321,28 @@ def ue_inline_shaders(d, label, out):
-             except Exception: continue
-             if len(s) == raw and s[:4] == b'LSLG': take(s, j); break
+@@ -1793,7 +1793,28 @@ def arh_shaders(path, rel, entries, out):
+             monolith_shaders(data, f'/{rel}{name}', out)
+ 
  
 +_YAZ0 = []   # the native decoder of this process (DM_CODECS: nxnativev2's dmcodecs, crates/codecs), or None; loaded at the first use
 +def yaz0_native():
@@ -1094,7 +1143,7 @@ index 19bf112..11a7a8a 100644
      """Yaz0 decompression (Super Mario 3D World + Bowser's Fury: almost all of RomFS is .szs = SARC wrapped in Yaz0). Pure Python runs at about 20–45 MB/s per core, under a minute for the whole 4.7 GB RomFS in parallel, and needs no extra dependency.
      Group header bits: 1 = one literal byte; 0 = back-reference, 2 bytes {length high nibble, 12-bit distance} (distance + 1); length 0 reads one more byte + 0x12, else + 2. Overlapping copies are expanded by their period"""
      n = int.from_bytes(s[4:8], 'big'); out = bytearray(); si = 16
-@@ -1347,7 +1368,10 @@ def sarc_members(d):
+@@ -1819,7 +1840,10 @@ def sarc_members(d):
      names = hl + 12 + 16 * n + 8
      for i in range(n):
          h, attr, s, e = struct.unpack_from('<IIII', d, hl + 12 + 16 * i)
@@ -1106,7 +1155,7 @@ index 19bf112..11a7a8a 100644
          yield nm, d[doff + s:doff + e]
  
  NV_STAGES = ['vs', 'ps', 'gs', 'hs', 'ds', 'cs']   # NVN stage order
-@@ -1632,7 +1656,9 @@ def main():
+@@ -2256,7 +2280,9 @@ def main():
      files, results, common = [], [], None
      for i, (romfs, mainnso) in enumerate(zip(romfs_v, main_v)):
          tag = os.path.basename(os.path.dirname(os.path.abspath(romfs))) if i else ''
@@ -1118,19 +1167,19 @@ index 19bf112..11a7a8a 100644
          if not i:
              import unityfs
 diff --git a/dm/gfx/tools/uepak.py b/dm/gfx/tools/uepak.py
-index 7288288..415a50c 100644
+index 7bd86bc..29482c6 100644
 --- a/dm/gfx/tools/uepak.py
 +++ b/dm/gfx/tools/uepak.py
-@@ -435,7 +435,7 @@ def job(romfs, main_nso, work, decode=None):
-         for i in t.of_type(IO_SHADER_LIBRARY):
-             name = io_library_name(t, i, names) + '.ushaderbytecode'; b = io_archive(t, i, decode)
+@@ -458,7 +458,7 @@ def job(romfs, main_nso, work, decode=None):
+             seen.add(t.ids[i])
+             name = io_library_name(t, i, names) + '.ushaderbytecode'; b = io_archive(t, i, decode, chunk.get)
              open(os.path.join(work, 'archives', name), 'wb').write(b)
--            listing.append(dict(name=name, pak=os.path.relpath(tp, romfs), path=f'chunk {t.ids[i].hex()}', shaders=len(archive(b)['shaders']), compressed=0, compression='IoStore, decoded'))
-+            listing.append(dict(name=name, pak=os.path.relpath(tp, romfs).replace(os.sep, '/'), path=f'chunk {t.ids[i].hex()}', shaders=len(archive(b)['shaders']), compressed=0, compression='IoStore, decoded'))
+-            listing.append(dict(name=name, pak=os.path.relpath(t.path, romfs), path=f'chunk {t.ids[i].hex()}', shaders=len(archive(b)['shaders']), compressed=0, compression='IoStore, decoded'))
++            listing.append(dict(name=name, pak=os.path.relpath(t.path, romfs).replace(os.sep, '/'), path=f'chunk {t.ids[i].hex()}', shaders=len(archive(b)['shaders']), compressed=0, compression='IoStore, decoded'))
      for pak in unreal_paks(romfs, inline=False):
          with open(pak, 'rb') as f: enc = footer(f)[0]
          if enc and key is None:
-@@ -451,7 +451,7 @@ def job(romfs, main_nso, work, decode=None):
+@@ -474,7 +474,7 @@ def job(romfs, main_nso, work, decode=None):
              open(os.path.join(work, 'archives', name), 'wb').write(b)
              for i in comp:
                  off, size, raw, _ = a['shaders'][i]; recs.append((name, i, b[a['code'] + off:a['code'] + off + size], raw))
@@ -1163,7 +1212,7 @@ index 7d46abb..bf971fa 100644
          if (g_next_acq > now) { uint64_t w = g_next_acq - now; struct timespec ts = {(time_t)(w / 1000000000ull), (long)(w % 1000000000ull)}; nanosleep(&ts, NULL); }
          now = now_ns(); g_next_acq = g_next_acq && now < g_next_acq + period ? g_next_acq + period : now + period;
 diff --git a/dm/host/Makefile b/dm/host/Makefile
-index 7767b16..1099732 100644
+index 410b6ce..16347a1 100644
 --- a/dm/host/Makefile
 +++ b/dm/host/Makefile
 @@ -21,6 +21,9 @@ SRC=main.c loader.c hle.c crash.c probe.c thread.c memstat.m haptics_apple.m $(s
@@ -1173,17 +1222,17 @@ index 7767b16..1099732 100644
 +# nxnativev2's runtime (dm/rt/<part>/, copied in from nxnativev2's runtime/ folder; tests/ stays out): local play
 +RT=$(sort $(wildcard ../rt/*/*.c ../rt/*/*.m))
 +RT_H=$(sort $(wildcard ../rt/*/*.h))
- # Third party: libvpx ships only the VP9 decoder's sources (movie decoding, hle_movie.c), with its configuration headers in config/ (arm64, shared by Mac and iOS). Built separately into a static library, file by file, so host changes do not recompile it
+ # Third party: libvpx ships the VP8 and VP9 decoder sources (movie decoding, hle_movie.c), with its configuration headers in config/ (arm64, shared by Mac and iOS). Built separately into a static library, file by file, so host changes do not recompile it
  VPX=../third_party/libvpx
  VPX_SRC=$(sort $(shell find $(VPX) -name '*.c'))
 @@ -50,8 +53,8 @@ endif
  endif
  .PHONY: FORCE
  FORCE:
--dmhost: $(SRC) $(GFX) ../third_party/stb_vorbis/stb_vorbis.c dm.h hle.h dm_input.h pad_slots.h hle_haptics.h haptics_apple.h front.h $(GFX_H) $(GAME_H) $(GAME_STAMP) $(VPX_LIB)
--	clang $(CFLAGS) -I../gfx/nvn/include -I../third_party/vulkan-headers/include -I$(dir $(GAME_H)) -I$(VPX) -I../third_party/stb_vorbis -fobjc-arc -o $@ $(SRC) $(GFX) $(VPX_LIB) -framework Cocoa -framework QuartzCore -framework Metal -framework GameController -framework CoreHaptics -framework AudioToolbox -framework VideoToolbox -framework CoreMedia -framework CoreVideo -framework ImageIO -framework UniformTypeIdentifiers
-+dmhost: $(SRC) $(GFX) $(RT) ../third_party/stb_vorbis/stb_vorbis.c dm.h hle.h dm_input.h pad_slots.h hle_haptics.h haptics_apple.h front.h $(GFX_H) $(RT_H) $(GAME_H) $(GAME_STAMP) $(VPX_LIB)
-+	clang $(CFLAGS) -I. -I../gfx/nvn/include -I../third_party/vulkan-headers/include -I$(dir $(GAME_H)) -I$(VPX) -I../third_party/stb_vorbis -fobjc-arc -o $@ $(SRC) $(GFX) $(RT) $(VPX_LIB) -framework Network -framework Security -framework Cocoa -framework QuartzCore -framework Metal -framework GameController -framework CoreHaptics -framework AudioToolbox -framework VideoToolbox -framework CoreMedia -framework CoreVideo -framework ImageIO -framework UniformTypeIdentifiers
+-dmhost: $(SRC) $(GFX) ../third_party/stb_vorbis/stb_vorbis.c dm.h hle.h romfs_image.h dm_input.h pad_slots.h hle_haptics.h haptics_apple.h motion_fusion.h motion_apple.h motion_pro.h motion_pro_mac.h front.h $(GFX_H) $(GAME_H) $(GAME_STAMP) $(VPX_LIB)
+-	clang $(CFLAGS) -I../gfx/nvn/include -I../third_party/vulkan-headers/include -I$(dir $(GAME_H)) -I$(VPX) -I../third_party/stb_vorbis -fobjc-arc -o $@ $(SRC) $(GFX) $(VPX_LIB) -framework Cocoa -framework QuartzCore -framework Metal -framework MetalFX -framework GameController -framework CoreHaptics -framework IOKit -framework AudioToolbox -framework VideoToolbox -framework CoreMedia -framework CoreVideo -framework ImageIO -framework UniformTypeIdentifiers
++dmhost: $(SRC) $(GFX) $(RT) ../third_party/stb_vorbis/stb_vorbis.c dm.h hle.h romfs_image.h dm_input.h pad_slots.h hle_haptics.h haptics_apple.h motion_fusion.h motion_apple.h motion_pro.h motion_pro_mac.h front.h $(GFX_H) $(RT_H) $(GAME_H) $(GAME_STAMP) $(VPX_LIB)
++	clang $(CFLAGS) -I. -I../gfx/nvn/include -I../third_party/vulkan-headers/include -I$(dir $(GAME_H)) -I$(VPX) -I../third_party/stb_vorbis -fobjc-arc -o $@ $(SRC) $(GFX) $(RT) $(VPX_LIB) -framework Network -framework Security -framework Cocoa -framework QuartzCore -framework Metal -framework MetalFX -framework GameController -framework CoreHaptics -framework IOKit -framework AudioToolbox -framework VideoToolbox -framework CoreMedia -framework CoreVideo -framework ImageIO -framework UniformTypeIdentifiers
  clean:   # the host and everything make generates for it (gen/: the profile headers, the game stamp and the libvpx build; dmhost_* and *.dSYM beside them, as in .gitignore)
  	rm -rf gen dmhost dmhost_* *.dSYM
  .PHONY: clean
@@ -1216,7 +1265,7 @@ index 7f41e6c..da95786 100644
  HLE_FORCE("_ZN2nn7friends17NotificationQueueC1Ev", "notification queue creates no session (cut)", void, h_fr_NqCtor, void *self) { (void)self; }
  HLE_FORCE("_ZN2nn7friends17NotificationQueueD1Ev", "notification queue has no session to close (cut)", void, h_fr_NqDtor, void *self) { (void)self; }
 diff --git a/dm/host/hle_oe.c b/dm/host/hle_oe.c
-index c3a5780..3ca6ab6 100644
+index d6eb5b2..364c661 100644
 --- a/dm/host/hle_oe.c
 +++ b/dm/host/hle_oe.c
 @@ -8,7 +8,11 @@
@@ -1248,28 +1297,29 @@ index f1101ad..6ea9801 100644
  // ---------- ngc: newer SDK overloads (with bool). Always judged as no profanity ----------
  HLE_FORCE("_ZN2nn3ngc15ProfanityFilter10InitializeEPvmb", "profanity filter init; the host has no word list", Result, h_ngc_Init3, void *self, void *work, uint64_t sz, unsigned check) { (void)self; (void)work; (void)sz; (void)check; return RES_OK; }
 diff --git a/dm/host/hle_sdk16.c b/dm/host/hle_sdk16.c
-index 61ed9fe..0b7c0c0 100644
+index e8f8af5..f1d7505 100644
 --- a/dm/host/hle_sdk16.c
 +++ b/dm/host/hle_sdk16.c
-@@ -218,9 +218,10 @@ HLE_FORCE("_ZN2nn3nfp29StartNicknameAndOwnerSettingsEPNS0_12DeviceHandleEPbPNS0_
- // against the screen's vsyncs, two in some display-link ticks and none in others (iPhone: about one tick in seven, a stutter the frame-rate counter showed as 50 to 60)
- void dm_host_helper_qos(qos_class_t q);   // hle_thread.c
+@@ -232,10 +232,11 @@ static int vsync_tick(vsync_event_t *v) {   // 0: the event is gone and this thr
+     return 0;
+ }
  __attribute__((weak)) int mtl_link_wait_vsync(uint64_t *seen, uint64_t timeout_ns) { (void)seen; (void)timeout_ns; return 0; }   // nvn_mtl.m
 +__attribute__((weak)) int mtl_vsync_hz(void) { return 60; }   // nvn_mtl.m: 60, or the player's frame rate above 60 (DM_MAX_FPS)
- static void *vsync_thread(void *ev) {
+ static void *vsync_thread(void *arg) {
+     vsync_event_t *v = arg;
      dm_host_helper_qos(QOS_CLASS_USER_INTERACTIVE);   // the game paces frames on this event
 -    const char *e = getenv("DM_VSYNC_HZ"); double hz = e ? atof(e) : 60.0; if (hz <= 0) hz = 60.0;
 +    const char *e = getenv("DM_VSYNC_HZ"); double hz = e ? atof(e) : mtl_vsync_hz(); if (hz <= 0) hz = 60.0;
      uint64_t period = (uint64_t)(1e9 / hz), next = now_ns() + period, seen = 0;
      for (;;) {
-         if (!e && mtl_link_wait_vsync(&seen, 2 * period)) { hle_signal_system_event(ev); next = now_ns() + period; continue; }
+         if (!e && mtl_link_wait_vsync(&seen, 2 * period)) { if (!vsync_tick(v)) break; next = now_ns() + period; continue; }
 diff --git a/dm/host/hle_thread.c b/dm/host/hle_thread.c
-index 7814cd5..2d577a2 100644
+index 7e63506..fbea01a 100644
 --- a/dm/host/hle_thread.c
 +++ b/dm/host/hle_thread.c
-@@ -1020,6 +1020,15 @@ void hle_bind_system_event(void *ev, int autoclear) {      // Must be called on
-     g_se[g_nse].ev = ev; g_se[g_nse++].wh = wh;
-     pthread_mutex_unlock(&g_se_lock);
+@@ -1119,6 +1119,15 @@ int hle_signal_system_event_binding(uint64_t binding) {
+     pthread_mutex_unlock(&G);
+     return e != NULL;
  }
 +// As above, for an attach the guest makes again and again (nn::ldn::AttachStateChangeEvent): the event it hands over is always initialized here, as the SDK's attach does;
 +// a binding left at that address from an event the guest destroyed (Mario Kart 8 Deluxe destroys it when it leaves local play) would otherwise keep it uninitialized,
@@ -1280,17 +1330,17 @@ index 7814cd5..2d577a2 100644
 +    pthread_mutex_unlock(&g_se_lock); pthread_mutex_unlock(&G);
 +    hle_bind_system_event(ev, autoclear);
 +}
- void hle_signal_system_event(void *ev) {   // An unbound one is bound on the spot as manual-clear (can only happen on a guest thread)
+ void hle_signal_system_event(void *ev) {   // An unbound one is bound on the spot as manual-clear (only on a guest thread: off one it is skipped)
      // Lookup and signal under one hold of G: CloseHandle (which unbinds) also runs under G, so the handle cannot be closed and its number reused in between
      for (int bound = 0; ; bound = 1) {
 diff --git a/dm/host/loader.c b/dm/host/loader.c
-index 900a1fd..7da89a0 100644
+index 0ede3cc..363f76d 100644
 --- a/dm/host/loader.c
 +++ b/dm/host/loader.c
-@@ -148,7 +148,13 @@ static uint64_t resolve_sym(module_t *m, const char *name) {
- 
+@@ -150,7 +150,13 @@ static uint64_t resolve_sym(module_t *m, const char *name) {
  // Forced take-over table (hle.h HLE_FORCE, the __DATA,swforce section): a hit overrides the definition inside the module
  static const hle_force_ent *g_force; static unsigned g_nforce; static unsigned *g_force_hits;
+ static unsigned *g_fidx, g_fmask;   // name hash over the table: force_lookup runs for every named relocation, and each lookup used to strcmp its way through all 722 entries (the swhle table's scan is hashed the same way, hle.c)
 +// The runtime's take-overs (dm/rt, nxnativev2: __DATA,swforcert) come first while it wants them (dm_rt_force_on); the host's own otherwise
 +__attribute__((weak)) int dm_rt_force_on(const char *name);
 +static const hle_force_ent *g_rt; static unsigned g_nrt;
@@ -1301,8 +1351,8 @@ index 900a1fd..7da89a0 100644
      unsigned long sz; g_force = (const hle_force_ent *)getsectiondata(&_mh_execute_header, "__DATA", "swforce", &sz);
      g_nforce = g_force ? (unsigned)(sz / sizeof *g_force) : 0;
      g_force_hits = calloc(g_nforce + 1, sizeof *g_force_hits);
-@@ -157,6 +163,12 @@ static void force_init(void) {
-             if (!strcmp(g_force[i].name, g_force[j].name)) die("duplicate entry in the forced takeover list: %s", g_force[i].name);
+@@ -163,6 +169,12 @@ static void force_init(void) {
+         }
  }
  static void *force_lookup(const char *name) {
 +    if (g_nrt && dm_rt_force_on && dm_rt_force_on(name))
@@ -1311,89 +1361,39 @@ index 900a1fd..7da89a0 100644
 +                if (g_flag.imports) LOG("force %s  (runtime: %s)", name, g_rt[i].why);
 +                void *hlecount_wrap(const char *, const char *, void *); return hlecount_wrap("FORCE", name, g_rt[i].fn);
 +            }
-     for (unsigned i = 0; i < g_nforce; i++)
-         if (!strcmp(g_force[i].name, name)) {
-             if (!g_force_hits[i]++ && g_flag.imports) LOG("force %s  (%s)", name, g_force[i].why);
+     if (!g_fmask) return NULL;
+     for (unsigned j = sym_hash(name) & g_fmask; g_fidx[j]; j = (j + 1) & g_fmask) {
+         unsigned i = g_fidx[j] - 1;
 diff --git a/dm/ios/Sources/Launcher.swift b/dm/ios/Sources/Launcher.swift
-index 3c298a0..b5555e9 100644
+index dc63e4e..f0c0a2e 100644
 --- a/dm/ios/Sources/Launcher.swift
 +++ b/dm/ios/Sources/Launcher.swift
-@@ -1,7 +1,11 @@
+@@ -1,77 +1,392 @@
  // Launcher: the settings screen shown before the game starts (front_ios.m dm_show_launcher). Its settings come from the app's dm/launcher.json, which build_ipa.sh writes for this game
  // from dm/games/settings.tsv (dm/games/settings.py): each sets an environment variable the host reads when the game starts. A variable an env file set (Documents/env.txt, the bundle's
- // dm/env.txt; main.m lists them in DM_ENV_FILE_KEYS) is shown but kept. The choices are kept in UserDefaults. DM_LAUNCHER=0 in Documents/env.txt starts the game at once, as an app
--// without launcher.json does
-+// without launcher.json does.
+-// dm/env.txt; main.m lists them in DM_ENV_FILE_KEYS) is shown but kept. All settings share one screen, grouped by section (rows: LauncherRow.swift). Choices that differ from the game's default are kept
+-// in UserDefaults; Reset to tested defaults shows the defaults, and Play then forgets them. DM_LAUNCHER=0 in Documents/env.txt starts the game at once with the saved choices; DM_SAVED_CHOICES=0 ignores them (and keeps them)
++// dm/env.txt; main.m lists them in DM_ENV_FILE_KEYS) is shown but kept (the model: LauncherSettings.swift). Choices that differ from the game's default are kept in UserDefaults;
++// Reset to tested defaults shows the defaults, and Play then forgets them. DM_LAUNCHER=0 in Documents/env.txt starts the game at once with the saved choices; DM_SAVED_CHOICES=0 ignores them (and keeps them)
 +// The screen: on the left the game (its icon over a blurred copy of it, name, version, a few chips that say how it will start) and Play; on the right the settings in cards, one
-+// per group of the table, each row with an icon and an ⓘ that explains it. The Local play card also says whether iOS lets the app use the local network: a short Bonjour browse
++// per section of the table, each row with an icon and an ⓘ that explains it. The Local play card also says whether iOS lets the app use the local network: a short Bonjour browse
 +// for the type local play uses (lan_nw.m) brings up iOS's question here, before the game, rather than in the middle of its menus. Local play's password is set in the game.
++// The Mac app's settings window keeps the plain rows (LauncherRow.swift)
 +import Network
  import SwiftUI
  import UIKit
  import os
-@@ -10,13 +14,25 @@ private struct Setting: Decodable, Identifiable {
-     let env, kind, label, note, def: String
-     let options: [[String]]?   // choice: [value, label]
-     let min, max, step: Double?   // range
-+    let group, icon, help: String
-     var id: String { env }
--    enum CodingKeys: String, CodingKey { case env, kind, label, note, def = "default", options, min, max, step }
-+    enum CodingKeys: String, CodingKey { case env, kind, label, note, def = "default", options, min, max, step, group, icon, help }
-+    init(from d: Decoder) throws {   // group / icon / help came later: an older launcher.json has none
-+        let c = try d.container(keyedBy: CodingKeys.self)
-+        env = try c.decode(String.self, forKey: .env); kind = try c.decode(String.self, forKey: .kind); label = try c.decode(String.self, forKey: .label)
-+        note = try c.decodeIfPresent(String.self, forKey: .note) ?? ""; def = try c.decode(String.self, forKey: .def)
-+        options = try c.decodeIfPresent([[String]].self, forKey: .options)
-+        min = try c.decodeIfPresent(Double.self, forKey: .min); max = try c.decodeIfPresent(Double.self, forKey: .max); step = try c.decodeIfPresent(Double.self, forKey: .step)
-+        group = try c.decodeIfPresent(String.self, forKey: .group) ?? "Settings"
-+        icon = try c.decodeIfPresent(String.self, forKey: .icon) ?? "slider.horizontal.3"
-+        help = try c.decodeIfPresent(String.self, forKey: .help) ?? ""
-+    }
- }
- private struct SettingsFile: Decodable { let settings: [Setting] }
  
  private func info(_ key: String) -> Any? { Bundle.main.object(forInfoDictionaryKey: key) }
- private let defaults = UserDefaults.standard
-+private let env = ProcessInfo.processInfo.environment
  
- private final class LauncherModel: ObservableObject {
-     let settings: [Setting]
-@@ -25,15 +41,26 @@ private final class LauncherModel: ObservableObject {
- 
-     init(_ settings: [Setting]) {
-         self.settings = settings
--        fromFile = Set((ProcessInfo.processInfo.environment["DM_ENV_FILE_KEYS"] ?? "").split(separator: " ").map(String.init))
-+        fromFile = Set((env["DM_ENV_FILE_KEYS"] ?? "").split(separator: " ").map(String.init))
-         for s in settings {
--            if fromFile.contains(s.env), let v = ProcessInfo.processInfo.environment[s.env] { values[s.env] = v; continue }
-+            if fromFile.contains(s.env), let v = env[s.env] { values[s.env] = v; continue }
-             let saved = defaults.string(forKey: "launcher." + s.env)
-             values[s.env] = saved.flatMap { v in s.options == nil || s.options!.contains { $0[0] == v } ? v : nil } ?? s.def   // a saved choice the game no longer offers: its default
-         }
-     }
- 
-     func binding(_ s: Setting) -> Binding<String> { Binding(get: { self.values[s.env] ?? s.def }, set: { self.values[s.env] = $0 }) }
++private extension LauncherModel {
 +    func value(_ env: String) -> String? { settings.contains { $0.env == env } ? values[env] : nil }
 +    func choiceLabel(_ env: String) -> String? {
 +        guard let s = settings.first(where: { $0.env == env }), let v = values[env] else { return nil }
 +        return s.options?.first { $0[0] == v }?[1]
 +    }
-+    // the cards: one per group, in the order of each group's first setting
-+    var groups: [(name: String, rows: [Setting])] {
-+        var order: [String] = [], rows: [String: [Setting]] = [:]
-+        for s in settings { if rows[s.group] == nil { order.append(s.group) }; rows[s.group, default: []].append(s) }
-+        return order.map { ($0, rows[$0]!) }
-+    }
- 
-     // Before the game starts: every setting not set by an env file goes into the environment (DM_LANG replaces the packed language main.m set as a default)
-     func apply() {
-@@ -46,130 +73,358 @@ private final class LauncherModel: ObservableObject {
-     }
- }
- 
--private struct SettingRow: View {
--    let s: Setting
--    @ObservedObject var m: LauncherModel
++}
++
 +// Whether iOS lets this app use the local network: there is no call that says, so a Bonjour browse for local play's type tells. While the question has not been
 +// answered the browse is ready (shown as allowed); a "no", now or before, makes it wait with Bonjour's policy denied (-65570). In LiveContainer the answer is LiveContainer's
 +private final class LocalNetworkCheck: ObservableObject {
@@ -1419,10 +1419,7 @@ index 3c298a0..b5555e9 100644
 +    }
 +    func stop() { browser?.cancel(); browser = nil; state = .checking }
 +}
- 
--    private var locked: Bool { m.fromFile.contains(s.env) }
--    private var note: String {
--        locked ? (s.note.isEmpty ? "" : s.note + " · ") + "Set by an env file" : s.note
++
 +// Shaders on device: a build that left the shaders' compile to the device (DM_XCRUN_DEFER) has them compiled here, before the game, on every core (nxnativev2's
 +// runtime/shaders/prepare.m), so the game finds them in Metal's cache instead of stuttering at each first use. Play never waits: pressed early, the rest goes on in the background; once per set of shaders, iOS version and GPU
 +@_silgen_name("dm_shaders_to_prepare") private func dmShadersToPrepare(_ dir: UnsafePointer<CChar>) -> Int32
@@ -1443,10 +1440,7 @@ index 3c298a0..b5555e9 100644
 +        let msl = String(cString: p)
 +        let dirs = (try? FileManager.default.contentsOfDirectory(atPath: msl))?.filter { $0.hasPrefix("b-") }.sorted() ?? []
 +        return dirs.last.map { msl + "/" + $0 }
-     }
--    private var rangeValue: Binding<Double> {
--        Binding(get: { Double(m.values[s.env] ?? s.def) ?? s.max ?? 1 },
--                set: { m.values[s.env] = String(format: "%.2f", $0) })
++    }
 +    func start() {
 +        guard started == nil else { return }
 +        started = Date()
@@ -1468,8 +1462,7 @@ index 3c298a0..b5555e9 100644
 +            DispatchQueue.main.async { self.done = self.total; self.ready = true }
 +            fputs("launcher: shaders ready (\(failed) failed)\n", stderr)
 +        }
-     }
--    private var percentage: String { "\(Int((rangeValue.wrappedValue * 100).rounded())) %" }
++    }
 +    // "about 3 min left", from the pace so far
 +    var remaining: String {
 +        guard let s = started, done > 0, total > done else { return "" }
@@ -1477,42 +1470,30 @@ index 3c298a0..b5555e9 100644
 +        return left < 60 ? "less than a minute left" : "about \(Int((left / 60).rounded(.up))) min left"
 +    }
 +}
- 
--    private var settingLabel: some View {
--        VStack(alignment: .leading, spacing: 4) {
--            Text(s.label)
--            if !note.isEmpty { Text(note).font(.footnote).foregroundStyle(.secondary) }
--        }
-+private func groupTint(_ group: String) -> Color {
-+    switch group {
-+    case "Display & performance": return .orange
++
++private func sectionTint(_ section: String) -> Color {
++    switch section {
++    case "Performance": return .orange
 +    case "Game": return .blue
 +    case "Controls": return .purple
 +    case "Local play": return .green
 +    default: return .gray
 +    }
 +}
-+private func groupIconName(_ group: String) -> String {
-+    switch group {
-+    case "Display & performance": return "sparkles.tv"
++private func sectionIconName(_ section: String) -> String {
++    switch section {
++    case "Performance": return "sparkles.tv"
 +    case "Game": return "gamecontroller"
 +    case "Controls": return "hand.tap"
 +    case "Local play": return "person.2.wave.2"
 +    default: return "slider.horizontal.3"
-     }
++    }
 +}
- 
++
 +// ---------- pieces ----------
 +private struct IconTile: View {
 +    let name: String, color: Color
-     var body: some View {
--        Group {
--            switch s.kind {
--            case "choice":
--                Picker(selection: m.binding(s)) {
--                    ForEach(s.options ?? [], id: \.[0]) { Text($0[1]).tag($0[0]) }
--                } label: {
--                    settingLabel
++    var body: some View {
 +        Image(systemName: name).font(.system(size: 14, weight: .semibold)).foregroundStyle(.white)
 +            .frame(width: 30, height: 30).background(color.gradient, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
 +    }
@@ -1528,35 +1509,7 @@ index 3c298a0..b5555e9 100644
 +                VStack(alignment: .leading, spacing: 8) {
 +                    Text(title).font(.headline)
 +                    Text(text).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                 }
--                .pickerStyle(.navigationLink)
--            case "range":
--                NavigationLink {
--                    Form {
--                        Section {
--                            HStack {
--                                Text(s.label)
--                                Spacer()
--                                Text(percentage).monospacedDigit().foregroundStyle(.secondary)
--                            }
--                            Slider(value: rangeValue, in: (s.min ?? 0)...(s.max ?? 1), step: s.step ?? 0.05)
--                                .accessibilityLabel(s.label)
--                                .accessibilityValue(percentage)
--                                .disabled(locked)
--                        } footer: {
--                            if !note.isEmpty { Text(note) }
--                        }
--                    }
--                    .contentMargins(.horizontal, 12, for: .scrollContent)
--                    .navigationTitle(s.label)
--                    .navigationBarTitleDisplayMode(.inline)
--                    .toolbar(.visible, for: .navigationBar)
--                } label: {
--                    HStack {
--                        settingLabel
--                        Spacer()
--                        Text(percentage).monospacedDigit().foregroundStyle(.secondary)
--                    }
++                }
 +                .padding(18).frame(width: 320, alignment: .leading)
 +                .presentationCompactAdaptation(.popover)
 +            }
@@ -1633,16 +1586,17 @@ index 3c298a0..b5555e9 100644
 +}
 +
 +// ---------- a setting ----------
-+private struct SettingRow: View {
++private struct CardRow: View {
 +    let s: Setting
 +    @ObservedObject var m: LauncherModel
++    private var locked: Bool { m.fixed.contains(s.env) }
 +    var body: some View {
-+        let locked = m.fromFile.contains(s.env)
 +        HStack(spacing: 12) {
-+            IconTile(name: s.icon, color: groupTint(s.group))
++            IconTile(name: s.icon ?? "slider.horizontal.3", color: sectionTint(s.sectionTitle))
 +            control.disabled(locked)
-+            if !s.help.isEmpty || locked {
-+                HelpButton(title: s.label, text: [s.help, locked ? "Set by an env file (the app's env.txt or a debug build): it is kept as it is." : ""].filter { !$0.isEmpty }.joined(separator: "\n\n"))
++            if !(s.help ?? "").isEmpty || locked {
++                HelpButton(title: s.label, text: [s.help ?? "", locked ? (m.fromLaunch.contains(s.env) ? "Set at launch: it is kept as it is." : "Set by an env file (the app's env.txt or a debug build): it is kept as it is.") : ""]
++                    .filter { !$0.isEmpty }.joined(separator: "\n\n"))
 +            }
 +        }
 +    }
@@ -1650,7 +1604,7 @@ index 3c298a0..b5555e9 100644
 +        VStack(alignment: .leading, spacing: 2) {
 +            HStack(spacing: 6) {
 +                Text(s.label)
-+                if m.fromFile.contains(s.env) { Image(systemName: "lock.fill").font(.caption2).foregroundStyle(.secondary) }
++                if locked { Image(systemName: "lock.fill").font(.caption2).foregroundStyle(.secondary) }
 +            }
 +            if !s.note.isEmpty { Text(s.note).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
 +        }
@@ -1671,30 +1625,31 @@ index 3c298a0..b5555e9 100644
 +                HStack {
 +                    title
 +                    Spacer()
-+                    Text("\(Int((v.wrappedValue * 100).rounded())) %").monospacedDigit().foregroundStyle(.secondary)
-                 }
--            default:
--                Toggle(isOn: Binding(get: { (m.values[s.env] ?? s.def) == "1" }, set: { m.values[s.env] = $0 ? "1" : "0" })) {
--                    settingLabel
-+                Slider(value: v, in: lo...hi, step: s.step ?? 0.05).tint(groupTint(s.group))
++                    Text(m.rangeLabel(s, v.wrappedValue)).monospacedDigit().foregroundStyle(.secondary)
++                }
++                Slider(value: v, in: lo...hi, step: s.step ?? 0.05).tint(sectionTint(s.sectionTitle))
++                    .accessibilityLabel(s.label).accessibilityValue(m.rangeLabel(s, v.wrappedValue))
 +            }
 +        default:
-+            Toggle(isOn: Binding(get: { (m.values[s.env] ?? s.def) == "1" }, set: { m.values[s.env] = $0 ? "1" : "0" })) { title }.tint(groupTint(s.group))
++            Toggle(isOn: Binding(get: { (m.values[s.env] ?? s.def) == s.onValue }, set: { m.values[s.env] = $0 ? s.onValue : s.offValue })) { title }.tint(sectionTint(s.sectionTitle))
 +        }
 +    }
 +}
 +
-+// ---------- a group: a section of the form ----------
-+private struct GroupSection: View {
-+    let name: String, rows: [Setting]
++// ---------- a section: a card of the form ----------
++private struct SectionCard: View {
++    let name: String
 +    @ObservedObject var m: LauncherModel
 +    @ObservedObject var lan: LocalNetworkCheck
 +    var body: some View {
-+        Section {
-+            ForEach(rows) { SettingRow(s: $0, m: m) }
-+            if rows.contains(where: { $0.env == "DM_LAN" }) && m.values["DM_LAN"] == "1" { localNetwork }
-+        } header: {
-+            Label(name, systemImage: groupIconName(name)).font(.footnote.weight(.semibold)).foregroundStyle(groupTint(name))
++        let rows = m.rows(in: name)
++        if !rows.isEmpty {
++            Section {
++                ForEach(rows) { CardRow(s: $0, m: m) }
++                if rows.contains(where: { $0.env == "DM_LAN" }) && m.values["DM_LAN"] == "1" { localNetwork }
++            } header: {
++                Label(name, systemImage: sectionIconName(name)).font(.footnote.weight(.semibold)).foregroundStyle(sectionTint(name))
++            }
 +        }
 +    }
 +    // Local play's own line: whether iOS lets it on the network (the password is set in the game, from the lock over it)
@@ -1711,14 +1666,13 @@ index 3c298a0..b5555e9 100644
 +                        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
 +                    Button("Open Settings") { if let u = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(u) } }
 +                        .buttonStyle(.bordered).controlSize(.small)
-                 }
-             }
-         }
--        .disabled(locked)
++                }
++            }
++        }
 +        .font(.subheadline)
-     }
- }
- 
++    }
++}
++
 +// ---------- the screen ----------
  private struct LauncherView: View {
      @ObservedObject var m: LauncherModel
@@ -1744,31 +1698,43 @@ index 3c298a0..b5555e9 100644
 -                }
 -                .padding(16)
 -                .frame(width: geometry.size.width / 3, height: geometry.size.height)
--                NavigationStack {
--                    List {
--                        Section {
--                            ForEach(m.settings) { SettingRow(s: $0, m: m) }
--                        }
--                        Section {
--                            HStack {
--                                Text("Memory available")
--                                Spacer()
--                                Text(ByteCountFormatter.string(fromByteCount: Int64(memory), countStyle: .memory)).monospacedDigit().foregroundStyle(.secondary)
+-                List {
+-                    ForEach(m.sections, id: \.self) { section in
+-                        let rows = m.rows(in: section)
+-                        if !rows.isEmpty {
+-                            Section(section) {
+-                                ForEach(rows) { SettingRow(s: $0, m: m) }
 -                            }
 -                        }
 -                    }
--                    .listStyle(.insetGrouped)
--                    .contentMargins(.horizontal, 12, for: .scrollContent)
--                    .navigationBarTitleDisplayMode(.inline)
--                    .toolbar(.hidden, for: .navigationBar)
--                }
--                .frame(width: geometry.size.width * 2 / 3)
--            }
+-                    Section {
+-                        Button("Reset to tested defaults") { m.reset() }
+-                            .disabled(!m.changed)
+-                    } footer: {
+-                        Text("Brings back all settings this game was tested with.")
+-                    }
+-                    Section {
+-                        HStack {
+-                            Text("Memory available")
+-                            Spacer()
+-                            Text(ByteCountFormatter.string(fromByteCount: Int64(memory), countStyle: .memory)).monospacedDigit().foregroundStyle(.secondary)
+-                        }
+-                    }
 +        HStack(spacing: 0) {
 +            game.frame(maxWidth: .infinity, maxHeight: .infinity)
-+            Form { ForEach(m.groups, id: \.name) { GroupSection(name: $0.name, rows: $0.rows, m: m, lan: lan) } }   // iOS's grouped form: its own margins, the same on both sides
-+                .formStyle(.grouped)
-+                .frame(maxWidth: .infinity)
++            Form {   // iOS's grouped form: its own margins, the same on both sides
++                ForEach(m.sections, id: \.self) { SectionCard(name: $0, m: m, lan: lan) }
++                Section {
++                    Button("Reset to tested defaults") { m.reset() }.disabled(!m.changed)
++                } footer: {
++                    Text("Brings back all settings this game was tested with.")
+                 }
+-                .listStyle(.insetGrouped)
+-                .contentMargins(.horizontal, 12, for: .scrollContent)
+-                .frame(width: geometry.size.width * 2 / 3)
+             }
++            .formStyle(.grouped)
++            .frame(maxWidth: .infinity)
          }
 -        .preferredColorScheme(.dark)
 +        .background(Color(.systemGroupedBackground).ignoresSafeArea())
@@ -1816,11 +1782,10 @@ index 3c298a0..b5555e9 100644
  
      @ViewBuilder var playButton: some View {
 -        let button = Button(action: play) { Text("Play").font(.title3.weight(.semibold)).frame(maxWidth: 220) }.controlSize(.large)
--        if #available(iOS 26.0, *) { button.buttonStyle(.glassProminent) } else { button.buttonStyle(.borderedProminent) }
-+        Button(action: { shaders.playing(); play() }) { Label("Play", systemImage: "play.fill").font(.title3.weight(.semibold)).frame(maxWidth: 240) }
-+            .controlSize(.large).buttonStyle(.glassProminent)
-+    }
-+
++        let button = Button(action: { shaders.playing(); play() }) { Label("Play", systemImage: "play.fill").font(.title3.weight(.semibold)).frame(maxWidth: 240) }.controlSize(.large)
+         if #available(iOS 26.0, *) { button.buttonStyle(.glassProminent) } else { button.buttonStyle(.borderedProminent) }
+     }
+ 
 +    // Shaders on device: the compile before the first start and how far it is; Play is never held (pressed early, the rest goes on in the background)
 +    @ViewBuilder private var shaderProgress: some View {
 +        VStack(alignment: .leading, spacing: 6) {
@@ -1836,32 +1801,32 @@ index 3c298a0..b5555e9 100644
 +        }
 +        .frame(maxWidth: 320)
 +        .padding(.bottom, 6)
-     }
- 
++    }
++
      private func appIcon() -> UIImage? {
-@@ -183,7 +438,7 @@ private struct LauncherView: View {
- // Shows the launcher over the root view controller and calls done once the settings are in the environment; false (done is not called) when there is no launcher
- @_cdecl("dm_show_launcher")
- public func dmShowLauncher(_ viewController: UnsafeMutableRawPointer, _ done: @convention(c) () -> Void) -> Bool {
--    if ProcessInfo.processInfo.environment["DM_LAUNCHER"] == "0" { fputs("launcher: off (DM_LAUNCHER=0)\n", stderr); return false }
-+    if env["DM_LAUNCHER"] == "0" { fputs("launcher: off (DM_LAUNCHER=0)\n", stderr); return false }
-     guard let url = Bundle.main.resourceURL?.appendingPathComponent("dm/launcher.json"), let data = try? Data(contentsOf: url) else { return false }
-     guard let file = try? JSONDecoder().decode(SettingsFile.self, from: data), !file.settings.isEmpty else { fputs("[RED] launcher: dm/launcher.json cannot be read; starting the game\n", stderr); return false }
-     let parent = Unmanaged<UIViewController>.fromOpaque(viewController).takeUnretainedValue()
-diff --git a/dm/ios/Sources/main.m b/dm/ios/Sources/main.m
-index 4ffddaf..491953c 100644
---- a/dm/ios/Sources/main.m
-+++ b/dm/ios/Sources/main.m
-@@ -49,7 +49,8 @@ static int boot_env(void) {
+         if let i = UIImage(named: "AppIcon") { return i }
+         guard let icons = info("CFBundleIcons") as? [String: Any], let primary = icons["CFBundlePrimaryIcon"] as? [String: Any],
+diff --git a/dm/ios/Sources/LauncherSettings.swift b/dm/ios/Sources/LauncherSettings.swift
+index d03c557..713d44f 100644
+--- a/dm/ios/Sources/LauncherSettings.swift
++++ b/dm/ios/Sources/LauncherSettings.swift
+@@ -12,6 +12,7 @@ struct Setting: Decodable, Identifiable {
+     let options: [[String]]?   // choice: [value, label]
+     let min, max, step: Double?   // range
+     let on, off: String?   // toggle: the values the variable takes (1 / 0 when not given)
++    let icon, help: String?   // the iPhone's settings screen: the row's SF Symbol and what its ⓘ explains (Launcher.swift); absent in older bundles
+     var id: String { env }
+     var sectionTitle: String { section ?? "Game" }
+     var basic: Bool { level == "basic" }
+@@ -30,7 +31,7 @@ struct Setting: Decodable, Identifiable {
+         default: return true
          }
      }
-     setenv("DM_ENV_FILE_KEYS", [from_file componentsJoinedByString:@" "].UTF8String, 1);   // the launcher keeps what an env file set (Launcher.swift)
--    if (getenv("DM_METAL_HUD") && atoi(getenv("DM_METAL_HUD"))) setenv("MTL_HUD_ENABLED", "1", 0);   // Metal reads it when the process makes its first device (the early loading below may make it)
-+    // Apple's Metal performance HUD: iOS takes MTL_HUD_ENABLED as the process starts, so only an env file's DM_METAL_HUD can turn it on (a launcher switch, read later, could not)
-+    if (getenv("DM_METAL_HUD") && atoi(getenv("DM_METAL_HUD"))) setenv("MTL_HUD_ENABLED", "1", 0);
-     // Game language (nn::oe::GetDesiredLanguage, hle_oe.c): the one the IPA was packed with (the NSP script's LANGUAGE / --language → DMLanguage in Info.plist), unless an env file sets DM_LANG
-     // (or the launcher, which replaces this default before the game starts)
-     NSString *lang = [NSBundle.mainBundle objectForInfoDictionaryKey:@"DMLanguage"];
+-    enum CodingKeys: String, CodingKey { case env, kind, label, note, def = "default", section, needs, level, base, options, min, max, step, on, off }
++    enum CodingKeys: String, CodingKey { case env, kind, label, note, def = "default", section, needs, level, base, options, min, max, step, on, off, icon, help }
+ }
+ struct SettingsFile: Decodable { let settings: [Setting] }
+ 
 diff --git a/dm/ios/project.yml b/dm/ios/project.yml
 index 4a1e3b6..2ea756a 100644
 --- a/dm/ios/project.yml
@@ -2053,11 +2018,11 @@ index 0000000..6335a5e
 +if __name__ == '__main__':
 +    main()
 diff --git a/dm/ios/tools/build_ipa.sh b/dm/ios/tools/build_ipa.sh
-index f07ffff..94128ac 100755
+index e2c174d..935eb48 100755
 --- a/dm/ios/tools/build_ipa.sh
 +++ b/dm/ios/tools/build_ipa.sh
-@@ -24,6 +24,9 @@ gp() { python3 "$DM/games/game.py" "$GAME" "$1" || die "game profile $GD: $1"; }
- PKG=$(gp package)
+@@ -28,6 +28,9 @@ PKG=$(gp package)
+ if [ -z "${ROMFS:-}" ] && [ -f "$W/data/$PKG/RomFS.img" ]; then ROMFS=$W/data/$PKG/RomFS.img; fi
  PATCHED=${PATCHED:-$W/build/patched_$PKG}; ROMFS=${ROMFS:-$W/data/$PKG/RomFS}; MSL_IOS=${MSL_IOS:-$W/build/ios/dmsh_b}; AOC=${AOC-$W/data/aoc}
  PREPARE_XCODE=NO; [ "${1:-}" != --prepare-xcode ] || PREPARE_XCODE=YES
 +# Linux (no Xcode): tools/build_app_linux.py builds the app with clang and ld64.lld against xtool's iOS SDK instead of xcodegen + xcodebuild; the icon goes in as PNG files (no actool)
@@ -2066,7 +2031,7 @@ index f07ffff..94128ac 100755
  OUT_IPA=${1:-$(dirname "$W")/$(gp ipa)}; O=$W/build/ios/pkg; DD=$O/dd
  XCODE_DD=${DM_XCODE_DERIVED_DATA:-$W/build/ios/xcode-dd}
  MODS=$(gp modules); MARKER=$(gp romfs_marker)
-@@ -83,14 +86,21 @@ if [ -n "${DM_ENV_FILE:-}" ]; then cp "$DM_ENV_FILE" Gen/dm/env.txt || die "copy
+@@ -106,14 +109,21 @@ if [ -n "${DM_ENV_FILE:-}" ]; then cp "$DM_ENV_FILE" Gen/dm/env.txt || die "copy
  # The shader libraries go into the archive as DmIOS.app/msl/<folder> (main.m sets DM_MSL_DIR to it)
  if [ "$GFXAPI" = vulkan ]; then MSLDIR=vk; elif [ "$GFXAPI" = gl ]; then MSLDIR=gl; else MSLDIR=b-$V; fi
  # Shared-font stand-ins: standard = macOS's Arial Unicode (absent on iOS), Nintendo extension = button icons generated by make_ext_font.py (needs fontTools; FONT_PY names a python that has it)
@@ -2090,18 +2055,21 @@ index f07ffff..94128ac 100755
    AI=Gen/Assets.xcassets/AppIcon.appiconset; mkdir -p "$AI" || die "mkdir $AI"
    sips -s format png -z 1024 1024 "$ICON" --out "$AI/icon.png" > /dev/null || die "sips: cannot convert the icon $ICON"
    printf '{"images":[{"filename":"icon.png","idiom":"universal","platform":"ios","size":"1024x1024"}],"info":{"author":"xcode","version":1}}\n' > "$AI/Contents.json"
-@@ -106,8 +116,8 @@ if [ "$PREPARE_XCODE" = YES ] && [ -n "${DM_ENTITLEMENTS-default}" ]; then
-   echo "CODE_SIGN_ENTITLEMENTS = Gen/DmIOS.entitlements" >> Gen/dm.xcconfig
-   t "entitlements: $(plutil -convert json -o - Gen/DmIOS.entitlements)"
+@@ -131,10 +141,10 @@ if [ "$PREPARE_XCODE" = YES ] && [ -n "${DM_ENTITLEMENTS-default}" ]; then
  fi
+ # DM_COPY_ROMFS=NO also for the prepared project: its Copy game resources phase (stage_resources.sh) then leaves the game files out and writes the image's identity; Gen/dm.xcconfig is made again by every run
+ [ "${DM_COPY_ROMFS:-YES}" != NO ] || [ "$PREPARE_XCODE" != YES ] || echo "DM_COPY_ROMFS = NO" >> Gen/dm.xcconfig
 -xcodegen generate -q > /dev/null || die "xcodegen"
--python3 tools/gen_resources.py "$IOS" "$ROMFS" "$MARKER" "$MSL_IOS/$MSLDIR" "$MSLDIR" "$AOC" "$XCODE_DD" "$DM/gfx/nvn/dmsh_chain.h" || die "generate Xcode resource paths"
 +[ "$LINUX" = YES ] || xcodegen generate -q > /dev/null || die "xcodegen"
-+[ "$LINUX" = YES ] || python3 tools/gen_resources.py "$IOS" "$ROMFS" "$MARKER" "$MSL_IOS/$MSLDIR" "$MSLDIR" "$AOC" "$XCODE_DD" "$DM/gfx/nvn/dmsh_chain.h" || die "generate Xcode resource paths"
+ # DM_METAL_CAPTURE=1: a development build that may write GPU frame captures (MetalCaptureEnabled; the host's DM_GPU_CAPTURE switch writes them to Documents/gpu_captures)
+-if [ "${DM_METAL_CAPTURE:-0}" = 1 ]; then /usr/libexec/PlistBuddy -c "Add :MetalCaptureEnabled bool true" Gen/Info.plist > /dev/null || die "MetalCaptureEnabled"; t "Metal frame capture: enabled (DM_METAL_CAPTURE=1)"; fi
+-DM_RESOURCE_BUILD=${PKG:-} GAME=$GAME python3 tools/gen_resources.py "$IOS" "$ROMFS" "$MARKER" "$MSL_IOS/$MSLDIR" "$MSLDIR" "$AOC" "$XCODE_DD" "$DM/gfx/nvn/dmsh_chain.h" "$PSO" || die "generate Xcode resource paths"
++if [ "${DM_METAL_CAPTURE:-0}" = 1 ] && [ "$LINUX" != YES ]; then /usr/libexec/PlistBuddy -c "Add :MetalCaptureEnabled bool true" Gen/Info.plist > /dev/null || die "MetalCaptureEnabled"; t "Metal frame capture: enabled (DM_METAL_CAPTURE=1)"; fi
++[ "$LINUX" = YES ] || DM_RESOURCE_BUILD=${PKG:-} GAME=$GAME python3 tools/gen_resources.py "$IOS" "$ROMFS" "$MARKER" "$MSL_IOS/$MSLDIR" "$MSLDIR" "$AOC" "$XCODE_DD" "$DM/gfx/nvn/dmsh_chain.h" "$PSO" || die "generate Xcode resource paths"
  if [ "$PREPARE_XCODE" = YES ]; then
    t "Xcode project: $IOS/DmIOS.xcodeproj"
    t "Xcode derived data: $XCODE_DD"
-@@ -116,14 +126,21 @@ if [ "$PREPARE_XCODE" = YES ]; then
+@@ -143,14 +153,21 @@ if [ "$PREPARE_XCODE" = YES ]; then
    exit 0
  fi
  
@@ -2126,16 +2094,18 @@ index f07ffff..94128ac 100755
  # Straight from the sources: the app without its signature, and without the folders an app built before pack_ipa.py still has (DerivedData keeps resources that left the project;
 diff --git a/dm/ios/tools/build_ipa_portable.py b/dm/ios/tools/build_ipa_portable.py
 new file mode 100755
-index 0000000..d3a886f
+index 0000000..b82adff
 --- /dev/null
 +++ b/dm/ios/tools/build_ipa_portable.py
-@@ -0,0 +1,164 @@
+@@ -0,0 +1,188 @@
 +#!/usr/bin/env python3
 +# build_ipa.sh's IPA path without bash, make or Xcode (Linux, Windows): the same steps, inputs (environment) and step lines (the NSP script's progress
 +# reads "generate Gen/", "xcodebuild", "pack IPA"). Gen/ comes from gen_build_portable.py, the app from build_app_linux.py (clang + ld64.lld against the
 +# iPhoneOS SDK), the archive from pack_ipa.py. The app icon goes to build_app_linux.py as DM_ICON (no actool). --prepare-xcode needs Xcode: use build_ipa.sh on a Mac.
 +# Usage: build_ipa_portable.py [output.ipa]   Environment: as build_ipa.sh (GAME, W, PATCHED, ROMFS, MSL_IOS, AOC, GFXAPI, DM_DISPLAY_NAME, DM_BUNDLE_ID,
-+#   DM_APP_VERSION, DM_SHOW_FPS, DM_LANG, DM_ICON, DM_ENV_FILE, STD_FONT, LETTER_FONT, FONT_PY)
++#   DM_APP_VERSION, DM_SHOW_FPS, DM_LANG, DM_ICON, DM_ENV_FILE, DM_COPY_ROMFS, IOS_PULL, STD_FONT, LETTER_FONT, FONT_PY)
++# Not here (macOS tools): the offline pipeline archive (pso_offline.py, metal-tt: the device builds the pipelines on its first start instead) and the unsigned IPA's
++# ad-hoc signature with the Increased Memory Limit entitlement (codesign: the install tool's signature carries the entitlements it is given)
 +import glob, os, shutil, subprocess, sys, time
 +
 +IOS = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
@@ -2168,7 +2138,7 @@ index 0000000..d3a886f
 +w = env.get('W') or die('W is not set: W=<the game\'s work folder>')
 +pkg = gp('package')
 +patched = env.get('PATCHED') or os.path.join(w, 'build', f'patched_{pkg}')
-+romfs = env.get('ROMFS') or os.path.join(w, 'data', pkg, 'RomFS')
++romfs = env.get('ROMFS') or next((p for p in (os.path.join(w, 'data', pkg, 'RomFS.img'),) if os.path.isfile(p)), os.path.join(w, 'data', pkg, 'RomFS'))   # an image or a folder
 +msl_ios = env.get('MSL_IOS') or os.path.join(w, 'build', 'ios', 'dmsh_b')
 +aoc = env['AOC'] if 'AOC' in env else os.path.join(w, 'data', 'aoc')
 +out_ipa = sys.argv[1] if len(sys.argv) > 1 else os.path.join(os.path.dirname(w), gp('ipa'))
@@ -2191,7 +2161,7 @@ index 0000000..d3a886f
 +for m in mods:
 +    if not (os.path.isfile(os.path.join(patched, f'{m}.patched.bin')) and os.path.isfile(os.path.join(patched, f'{m}.fixups.tsv'))):
 +        die(f'no rewritten module {patched}/{m} (run dm/tools/patch_nso.py first)')
-+if not os.path.exists(os.path.join(romfs, marker)): die(f'no RomFS at {romfs} (missing {marker})')
++if subprocess.run([PY, os.path.join(DM, 'tools', 'romfs.py'), romfs, marker]).returncode: die(f'no RomFS at {romfs} (missing {marker})')
 +chain = ''   # the chain version the host is compiled with, one for every game (dm/gfx/nvn/dmsh_chain.h)
 +for line in open(os.path.join(DM, 'gfx', 'nvn', 'dmsh_chain.h')):
 +    if line.startswith('#define DMSH_CHAIN "'): chain = line.split('"')[1]
@@ -2233,11 +2203,20 @@ index 0000000..d3a886f
 +if gfx == 'nvn':
 +    if os.path.isfile(os.path.join(gd, 'cb_extent.tsv')): shutil.copy(os.path.join(gd, 'cb_extent.tsv'), os.path.join(gen, 'dm'))
 +    else: t(f'no {gd}/cb_extent.tsv: the host copies whole uniform bindings')
++    # the shader pairs, beside the shader map where the pipeline prebuild reads them (nvn_mtl.m pso_prebuild): without them the app makes no pulling bases, and a hybrid draw has no stand-in
++    for tb in ('shader_pairs.tsv', 'pso_pairs.tsv'):
++        if os.path.isfile(os.path.join(gd, tb)): shutil.copy(os.path.join(gd, tb), os.path.join(gen, 'dm'))
++    if out(PY, games_py, game, 'pso_mtl4', 'off', what=f'game profile {gd}: pso_mtl4') == 'on' or env.get('DM_PSO_GPUS', 'none') != 'none':
++        t('no pipeline archive outside macOS (metal-tt): the device builds the pipelines on its first start')
 +# the launcher's settings (Launcher.swift), when this nxnative has them
 +settings_py = os.path.join(DM, 'games', 'settings.py')
 +if os.path.isfile(settings_py):
 +    launcher = out(PY, settings_py, game, patched, vnacp, os.path.join(gen, 'dm', 'launcher.json'), what='launcher settings (dm/games/settings.py)')
 +    t(f'launcher: {launcher}')
++    # the packed language (DMLanguage) is the Game language row's default, which settings.py makes the game's first language when it lacks DM_LANG: the screen and DM_LAUNCHER=0 then agree
++    import json
++    ld = next((s['default'] for s in json.load(open(os.path.join(gen, 'dm', 'launcher.json'), encoding='utf-8'))['settings'] if s['env'] == 'DM_LANG'), '')
++    if ld and ld != child['DM_LANG']: t(f'game language: the game has no {child["DM_LANG"]}; packing {ld}, its first'); child['DM_LANG'] = ld
 +if env.get('DM_ENV_FILE'):
 +    shutil.copy(env['DM_ENV_FILE'], os.path.join(gen, 'dm', 'env.txt'))
 +    t('env: ' + ' '.join(l.strip() for l in open(env['DM_ENV_FILE']) if l.strip() and not l.startswith('#')))
@@ -2288,10 +2267,23 @@ index 0000000..d3a886f
 +if aoc and os.path.isdir(aoc):
 +    maps.append(f'{p}/aoc={aoc}')
 +    t('add-on content: ' + ' '.join(sorted(os.listdir(aoc))))
-+maps.append(f'{p}/romfs={romfs}')
++if env.get('DM_COPY_ROMFS', 'YES') == 'NO':
++    t('no game files in the IPA (DM_COPY_ROMFS=NO): the app takes Documents/romfs.img (scripts/push_romfs.sh)')
++    # the image's identity (dm/host/romfs_identity.h) goes into the app as romfs.id: main.m then uses only a Documents/romfs.img with the same size and index hash.
++    # A RomFS folder has no image to name yet, so such a build carries no identity and accepts any complete image
++    if os.path.isfile(romfs):
++        rid = os.path.join(o, 'romfs.id')
++        with open(rid, 'w') as f: f.write(out(PY, '-I', os.path.join(DM, 'tools', 'romfs_image.py'), '--identity', romfs, game, version, env.get('PKG', ''), what=f'identity of {romfs}') + '\n')
++        maps.append(f'{p}/romfs.id={rid}'); t('game files identity: ' + open(rid).read().strip())
++elif os.path.isfile(romfs): maps.append(f'{p}/romfs.img={romfs}')
++else: maps.append(f'{p}/romfs={romfs}')
++# the pulling vertex libraries (<key>_bp) serve the hybrid pipelines: packed where the profile turns pso_mtl4 on (the game profile header), IOS_PULL=0 / 1 overrides it
++pull = next((l.split()[2] for l in open(os.path.join(DM, 'host', 'gen', game, 'game_profile.h')) if l.startswith('#define DM_GAME_PSO_MTL4 ')), None) if gfx == 'nvn' else '0'
++if pull not in ('0', '1'): die('no DM_GAME_PSO_MTL4 in the generated game profile')
++pack_opts = ['--store', gp('zip_store')] + ([] if env.get('IOS_PULL', pull) == '1' else ['--skip-suffix', '_bp.metallib'])
 +t('pack IPA (already-compressed game files stored, everything else deflated)')
-+r = subprocess.run([PY, os.path.join(IOS, 'tools', 'pack_ipa.py'), out_ipa, '--store', gp('zip_store'), '--skip', f'{p}/_CodeSignature', '--skip', f'{p}/embedded.mobileprovision',
-+                    '--skip', f'{p}/msl', '--skip', f'{p}/aoc', '--skip', f'{p}/romfs', *maps])
++r = subprocess.run([PY, os.path.join(IOS, 'tools', 'pack_ipa.py'), out_ipa, *pack_opts, '--skip', f'{p}/_CodeSignature', '--skip', f'{p}/embedded.mobileprovision',
++                    '--skip', f'{p}/msl', '--skip', f'{p}/aoc', '--skip', f'{p}/romfs', '--skip', f'{p}/romfs.img', '--skip', f'{p}/romfs.id', *maps])
 +if r.returncode: die('pack_ipa')
 +t(f'done: {out_ipa} ({os.path.getsize(out_ipa) / 2**30:.1f} GB)')
 diff --git a/dm/ios/tools/gen_build_portable.py b/dm/ios/tools/gen_build_portable.py
@@ -2453,7 +2445,7 @@ index a324f8e..da90103 100644
      if po < 0:   # patch area before the base (patch_nso.py FAR): W ends at the end of data, the loader supplies zero pages for bss and the key page; in the file the patch area follows at FILE_IMAGE_LEN
          fl = int(hdr['FILE_IMAGE_LEN'], 16)
 diff --git a/dm/ios/tools/ios_metal.py b/dm/ios/tools/ios_metal.py
-index 15d40da..b40d6af 100644
+index f270b18..c5670bf 100644
 --- a/dm/ios/tools/ios_metal.py
 +++ b/dm/ios/tools/ios_metal.py
 @@ -1,6 +1,6 @@
@@ -2464,7 +2456,7 @@ index 15d40da..b40d6af 100644
  # -fmetal-math-mode=relaxed: keep fast math's reassociation / contraction, but forbid assuming there are no NaN / Inf. The translated shaders reproduce Maxwell's NaN semantics with isnan selects (8337 / 12809 use them),
  # and the default fast mode lets each GPU's backend compiler treat them as always false; on the A20 Pro the opening course's odd frames had 727k NaN pixels in the main image (a few dozen with the same AIR on the M4 Pro), which became the black band / black-edged glow
  # -fpreserve-invariance: [[invariant]] position outputs only agree across shaders with this flag (as dmsh_build.py's MAC_METAL: a depth pre-pass followed by a less-or-equal G-buffer)
-@@ -8,6 +8,16 @@ METAL = ['xcrun', '-sdk', 'iphoneos', 'metal', '-c', '-mios-version-min=18.0', '
+@@ -9,6 +9,16 @@ METAL = ['xcrun', '-sdk', 'iphoneos', 'metal', '-c', '-O1', '-mios-version-min=1
  METALLIB = ['xcrun', '-sdk', 'iphoneos', 'metallib']
  RECORD = ' '.join(METAL) + '; ' + ' '.join(METALLIB)                                # Written into json chain.metal
  
@@ -2482,13 +2474,13 @@ index 15d40da..b40d6af 100644
      subprocess.run([*METAL, msl, '-o', air], check=True)
      subprocess.run([*METALLIB, air, '-o', lib], check=True)
 diff --git a/dm/ios/tools/pack_ipa.py b/dm/ios/tools/pack_ipa.py
-index 3aee7e0..49b28f0 100644
+index e46b7e3..f90ad3c 100644
 --- a/dm/ios/tools/pack_ipa.py
 +++ b/dm/ios/tools/pack_ipa.py
-@@ -16,6 +16,19 @@ CHUNK = 16 << 20
+@@ -24,6 +24,19 @@ CHUNK = 16 << 20
  L32, L16 = 0xFFFFFFFF, 0xFFFF
- DIR_MODE = stat.S_IFDIR | 0o755   # a parent folder no source folder stands for (Payload/, msl/)
- Entry = collections.namedtuple('Entry', 'name path st')   # st None: such a parent folder
+ DIR_MODE = stat.S_IFDIR | 0o755   # a parent folder no source folder stands for (Payload/, msl/); its time is 1980-01-01, so it is the same in every pack
+ Entry = collections.namedtuple('Entry', 'name path st root')   # st None: a synthetic parent; root: the mapping's source folder
 +MACHO = (b'\xcf\xfa\xed\xfe', b'\xce\xfa\xed\xfe', b'\xca\xfe\xba\xbe')   # 64-bit, 32-bit, universal
 +
 +
@@ -2504,8 +2496,8 @@ index 3aee7e0..49b28f0 100644
 +    return stat.S_IFREG | (0o755 if exe else 0o644)
  
  
- def entries(maps, skip):
-@@ -78,7 +91,7 @@ class Zip:
+ def entries(maps, skip, skip_suffix=()):
+@@ -116,7 +129,7 @@ class Zip:
          off, nb, fl, t, d = h
          z = [v for v in (usize, csize, off) if v >= L32]   # zip64 extra: the fields that do not fit, in this order
          ext = struct.pack(f'<HH{len(z)}Q', 1, 8 * len(z), *z) if z else b''
@@ -2513,7 +2505,16 @@ index 3aee7e0..49b28f0 100644
 +        mode = unix_mode(e) if e.st else DIR_MODE
          self.cd.append(struct.pack('<IHHHHHHIIIHHHHHII', 0x02014B50, 0x031E, 45 if z else 20 if method == 8 else 10, fl, method, t, d, crc, min(csize, L32), min(usize, L32),
                                     len(nb), len(ext), 0, 0, 0, (mode << 16) | (0x10 if stat.S_ISDIR(mode) else 0), min(off, L32)) + nb + ext)
- 
+         self.stats['deflated' if method == 8 else 'stored'] += usize
+@@ -251,7 +264,7 @@ def main():
+     part, tmp, ipart = a.out + '.partial', a.out + '.clone', a.out + '.idx.partial'
+     for path in (part, tmp, ipart):
+         if os.path.lexists(path): os.unlink(path)
+-    old, idx, infos = (None, None, {}) if a.no_reuse else load_index(a.out) or (None, None, {})
++    old, idx, infos = (None, None, {}) if a.no_reuse or sys.platform != 'darwin' else load_index(a.out) or (None, None, {})   # reuse clones on APFS (and reads with os.pread, which Windows lacks)
+     keep, kept = prefix(es, files, infos, old, idx, apfs) if old else ([], 0)
+     z = None
+     try:
 diff --git a/dm/linux/README.md b/dm/linux/README.md
 new file mode 100644
 index 0000000..91bdab9
@@ -2749,10 +2750,10 @@ index 0000000..cf34e8d
 +    rc, err = run_cached(sdk, tool, args); sys.stderr.buffer.write(err)
 +sys.exit(rc if rc is not None else run(sdk, tool, args).returncode)
 diff --git a/dm/tools/patch_nso.py b/dm/tools/patch_nso.py
-index 516a2ee..37dc188 100644
+index 05de667..605d015 100644
 --- a/dm/tools/patch_nso.py
 +++ b/dm/tools/patch_nso.py
-@@ -464,7 +464,16 @@ def x18_words(lo, hi):
+@@ -516,7 +516,16 @@ def x18_words(lo, hi):
              if R18.search(op): out.add(addr)
          a = last + 4 if last + 4 >= end else last + 8   # the chunk is done, or the word after the last decoded one is no instruction
      return out
@@ -2770,7 +2771,7 @@ index 516a2ee..37dc188 100644
  kinds = {}
  # Spin wait candidates (see "Spin waits" below): backward direct branches (b, b.cond, cbz / cbnz, tbz / tbnz) at most SPIN_WIN bytes back, by target
  SPIN_WIN, SPIN_TOPS = 512, {0x16, 0x17, 0x54, 0x34, 0x35, 0xB4, 0xB5, 0x36, 0x37, 0xB6, 0xB7}
-@@ -1184,7 +1193,10 @@ def spin_emit(g):
+@@ -1464,7 +1473,10 @@ def spin_emit(g):
          if x.mnemonic == 'b': put_branch(b, cpy[T])
          else: st = here(); emit(spin_rebranch(x, here(), cpy[T])); emit(B(here(), b + 4)); put_branch(b, st)
      stat('spin')
@@ -2782,11 +2783,438 @@ index 516a2ee..37dc188 100644
  spin_sites = [(g['T'], sorted(g['valid']), sum(len(g['nodes'][a]['ins']) for a in g['R'])) for g in spin_regions]
  for g in spin_regions: spin_emit(g)
  if os.environ.get('DM_SPIN_LIST'):
+diff --git a/dm/tools/tests/test_launcher_settings.py b/dm/tools/tests/test_launcher_settings.py
+index cd43d2d..e3af290 100644
+--- a/dm/tools/tests/test_launcher_settings.py
++++ b/dm/tools/tests/test_launcher_settings.py
+@@ -150,7 +150,7 @@ class LauncherSettingsTests(unittest.TestCase):
+ 
+     def test_table_format_is_strict(self):
+         good = 'DM_X\ttoggle\t-\t0\talways\tGame\tX\n'
+-        for bad, why in [('DM_X\ttoggle\t-\t0\talways\tGame\tX\t\tlevel=basic\textra\n', 'columns'),
++        for bad, why in [('DM_X\ttoggle\t-\t0\talways\tGame\tX\t\tlevel=basic\tgauge\thelp\textra\n', 'columns'),
+                          ('DM_X\ttoggle\t-\t0\talways\tGame\tX\t\tneeds=DM_NOPE=1\n', 'no row sets'),
+                          ('DM_Y\ttoggle\t-\t0\talways\tGame\tY\t\tneeds=DM_X=on\n', 'never takes'),
+                          ('DM_X\ttoggle\t-\t0\talways\tX\n', 'columns'), ('DM_X\ttoggle\t-\t0\talways\tsecret\tX\n', 'section'),
+diff --git a/dm/tools/tests/test_own_compilers.py b/dm/tools/tests/test_own_compilers.py
+index 63b54f6..575a7ce 100644
+--- a/dm/tools/tests/test_own_compilers.py
++++ b/dm/tools/tests/test_own_compilers.py
+@@ -31,6 +31,9 @@ def mismatch(key, actual): return f'{key}: lock {LOCKED[key]} / actual {actual}'
+ 
+ 
+ class CheckTools(unittest.TestCase):
++    def setUp(self):   # the Mac's rules; off macOS (Linux, Windows) see OffMac
++        p = mock.patch.object(own_compilers, 'MAC', True); p.start(); self.addCleanup(p.stop)
++
+     def check(self, bad, allow=False):
+         env = {k: v for k, v in os.environ.items() if k != own_compilers.ALLOW}
+         if allow: env[own_compilers.ALLOW] = '1'
+@@ -73,6 +76,29 @@ class CheckTools(unittest.TestCase):
+             if stops: self.assertIn(f'metal_macosx {OTHER}', msg); self.assertIn(f'metal_iphoneos {OTHER}', msg)
+ 
+ 
++class OffMac(unittest.TestCase):
++    """Linux and Windows: SPIRV-Cross built there from the pinned release and Apple's Metal Developer Tools for Windows never match the lock; both go on with the note line,
++    while a missing tool or another translator still fails"""
++    def check(self, bad):
++        out = io.StringIO()
++        env = {k: v for k, v in os.environ.items() if k != own_compilers.ALLOW}
++        with mock.patch.object(own_compilers, 'MAC', False), mock.patch.object(own_compilers, 'strict', lambda: list(bad)), mock.patch.dict(os.environ, env, clear=True), redirect_stdout(out):
++            return own_compilers.check_tools(), out.getvalue()
++
++    def test_own_spirv_cross_and_metal_go_on(self):
++        bad, out = self.check([mismatch('spirv-cross', '0123456789abcdef'), mismatch('metal_iphoneos', OTHER)])
++        self.assertEqual(bad, []); self.assertIn('spirv-cross 0123456789abcdef', out); self.assertIn(f'metal_iphoneos {OTHER}', out)
++
++    def test_missing_or_translator_still_fail(self):
++        xlate = mismatch('dmsh_xlate.dll', '0' * 16)
++        for bad, want in (([mismatch('spirv-cross', 'missing')],) * 2, ([xlate, mismatch('metal_iphoneos', OTHER)], [xlate])):
++            self.assertEqual(self.check(bad)[0], want)
++
++    def test_check_metal_passes(self):
++        with mock.patch.object(own_compilers, 'MAC', False), mock.patch.object(own_compilers, 'metal_version', lambda sdk: OTHER):
++            self.assertEqual(own_compilers.check_metal(), '')
++
++
+ class NspScript(unittest.TestCase):
+     def setUp(self):
+         self.tmp = Path(tempfile.mkdtemp()); self.addCleanup(shutil.rmtree, self.tmp)
+diff --git a/dm/tools/tests/test_shader_toolchain_cache.py b/dm/tools/tests/test_shader_toolchain_cache.py
+index 669079f..437b078 100644
+--- a/dm/tools/tests/test_shader_toolchain_cache.py
++++ b/dm/tools/tests/test_shader_toolchain_cache.py
+@@ -24,6 +24,8 @@ TOOLS = REPO / 'dm/gfx/tools'
+ sys.path.insert(0, str(TOOLS))
+ import dmsh_chain  # noqa: E402
+ import dmsh_mtlcache  # noqa: E402
++sys.path.insert(0, str(REPO / 'dm/rt/shaders'))   # nxnativev2's runtime, which its bundle copies in as dm/rt
++import dmsh_store  # noqa: E402
+ 
+ spec = importlib.util.spec_from_file_location('nsp_toolchain_cache', REPO / 'scripts/build_ipa_from_nsp.py')
+ assert spec and spec.loader
+@@ -31,66 +33,84 @@ nsp = importlib.util.module_from_spec(spec); spec.loader.exec_module(nsp)
+ 
+ 
+ class ShaderCache(unittest.TestCase):
++    """The shader and variant caches keep sources and reflection in the game's store (nxnativev2's dm/rt/shaders/dmsh_store.py); libraries come back only through
++    the Metal compile cache, keyed by the compiler, so no restore can hand back a library another compiler made"""
+     def setUp(self):
+         self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
+         root = Path(self.tmp.name)
++        self.compiled = []
++        def compile_lib(target, msl, lib): self.compiled.append((target, os.path.basename(lib))); Path(lib).write_bytes(target.encode() + b' ' + Path(msl).read_bytes())
+         self.ns: dict[str, Any] = dict(hashlib=hashlib, os=os, json=json, re=re, threading=threading,
+                        subprocess=subprocess, dmsh_chain=dmsh_chain, SPIRV_CROSS='converter',
+-                       XC=['--msl'], MAC_RECORD='mac flags', IOSOUT=None, TARGETS={'mac'},
++                       XC=['--msl'], MAC_RECORD='mac flags', IOSOUT=None, TARGETS={'mac'}, MAC_LIBS=True,
+                        ios_metal=types.SimpleNamespace(RECORD='ios flags'), METAL_FP='tested Metal and SDK',
+                        FACTS={}, MAP_ROWS={}, MAP_CONFLICT_ROWS={}, CODE_FP='source', PROFILE_ROWS=b'', PAIRS={},
+-                       BF_WANT=set(), BF_STATS=collections.Counter(), CAS=str(root / 'cas'), out=str(root / 'out'),
+-                       CHAIN='test-chain', clone=shutil.copyfile, shader_rule_source=lambda name: b'')
++                       BF_WANT=set(), BF_STATS=collections.Counter(), STORE=dmsh_store.Store(str(root / 'shaders.db')), out=str(root / 'out'),
++                       CHAIN='test-chain', MTL=types.SimpleNamespace(compile=compile_lib), shader_rule_source=lambda name: b'')
++        self.addCleanup(self.ns['STORE'].close)
+         (root / 'out').mkdir()
+-        names = {'tool_fingerprint', 'shader_key', 'cache_path', 'cache_outputs', 'restore_cache', 'publish_cache', 'atomic_json', 'cache_meta_path',
+-                 'bf_digest', 'bf_cache_root', 'bf_cache_restore'}
++        names = {'tool_fingerprint', 'shader_key', 'cache_outputs', 'restore_cache', 'publish_cache', 'atomic_json',
++                 'bf_digest', 'bf_cache_restore', 'bf_cache_publish', 'lib_dirs', 'compile_libs'}
+         tree = ast.parse((TOOLS / 'dmsh_build.py').read_text())
+         nodes: list[ast.stmt] = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in names]
++        nodes += [n for n in tree.body if isinstance(n, ast.Assign) and any(isinstance(x, ast.Name) and x.id == 'GEO' for x in n.targets)]
+         self.assertEqual({n.name for n in nodes if isinstance(n, ast.FunctionDef)}, names)
+         exec(compile(ast.Module(body=nodes, type_ignores=[]), str(TOOLS / 'dmsh_build.py'), 'exec'), self.ns)
+ 
++    def targets(self, *targets):
++        self.ns.update(TARGETS=set(targets), MAC_LIBS='mac' in targets, IOSOUT=str(Path(self.tmp.name) / 'ios') if 'ios' in targets else None)
++        if 'ios' in targets: Path(self.ns['IOSOUT']).mkdir(exist_ok=True)
++
+     def digest(self):
+         with mock.patch.object(subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, 'same revision', '')):
+             self.ns['TOOL_FP'] = self.ns['tool_fingerprint']().encode()
+         return self.ns['shader_key']('key', 'shader', b'original shader')
+ 
++    def built(self):   # a built shader's outputs, as finish leaves them
++        out = Path(self.ns['out'])
++        (out / 'key_b.metal').write_text('MSL'); (out / 'key_b.json').write_text(json.dumps({'chain': 'test-chain', 'stage': 'ps', 'fetch': {}}))
++        (out / 'key_b.metallib').write_bytes(b'mac library')
++        if self.ns['IOSOUT']:
++            ios = Path(self.ns['IOSOUT']); (ios / 'key_b.json').write_text('{}'); (ios / 'key_b.metallib').write_bytes(b'ios library')
++
+     def test_return_to_tested_compiler_does_not_restore_override_libraries(self):
+         for ios in (False, True):
+             with self.subTest(ios=ios):
+-                ios_dir = Path(self.tmp.name) / 'ios'
+-                self.ns['IOSOUT'] = str(ios_dir) if ios else None
+-                self.ns['TARGETS'] = {'mac', 'ios'} if ios else {'mac'}
+-                if ios: ios_dir.mkdir(exist_ok=True)
++                self.targets('mac', 'ios') if ios else self.targets('mac')
+                 self.ns['METAL_FP'] = 'override Metal and SDK'
+-                old = self.digest()
+-                for target in ('mac', 'ios') if ios else ('mac',):
+-                    d = Path(self.ns['cache_path'](old)) / target; d.mkdir(parents=True, exist_ok=True)
+-                    (d / 'key_b.metallib').write_bytes(b'untested compiled library')
+-                    (d / 'key_b.json').write_text('{}')
+-                    if target == 'mac': (d / 'key_b.metal').write_text('MSL')
++                old = self.digest(); self.built()
++                self.ns['publish_cache']('key', old, 'rule', 'source')
+                 self.assertTrue(self.ns['restore_cache']('key', old))
+                 self.ns['METAL_FP'] = 'tested Metal and SDK'
+                 self.assertFalse(self.ns['restore_cache']('key', self.digest()))
+ 
++    def test_store_keeps_no_library(self):
++        self.targets('mac', 'ios'); self.built()
++        self.ns['publish_cache']('key', 'digest', 'rule', 'source')
++        entry = self.ns['STORE'].lookup('shader', 'digest')
++        self.assertEqual({n for names in entry.values() for n in names if n.endswith('.metallib')}, set())
++        self.assertNotIn('fetch', json.loads(self.ns['STORE'].get(entry['mac']['key_b.json'])))   # side libraries are made again from the restored MSL
++
+     def test_fetch_variants_do_not_restore_override_libraries(self):
++        fmsl = Path(self.tmp.name) / 'fetch.metal'; fmsl.write_text('same fetch MSL')
+         self.ns['METAL_FP'] = 'override Metal and SDK'
+         old = self.ns['bf_digest']('same fetch MSL', 'key')
+-        d = Path(self.ns['bf_cache_root'](old)); d.mkdir(parents=True)
+-        (d / 'metal').write_text('same fetch MSL'); (d / 'mac.metallib').write_bytes(b'untested variant')
++        self.ns['bf_cache_publish'](old, str(fmsl))
+         self.ns['METAL_FP'] = 'tested Metal and SDK'
+         current = self.ns['bf_digest']('same fetch MSL', 'key')
+-        self.assertFalse(self.ns['bf_cache_restore']('key', current, {}, str(Path(self.tmp.name) / 'fetch.metal')))
++        self.assertFalse(self.ns['bf_cache_restore']('key', current, {}, str(fmsl)))
++        self.assertTrue(self.ns['bf_cache_restore']('key', old, {}, str(fmsl)))
++        self.assertEqual(self.compiled, [('mac', 'key_bf.metallib')])   # its library compiled from the source, not restored
+ 
+     def test_unchanged_compiler_reuses_key(self):
+         self.assertEqual(self.digest(), self.digest())
+ 
+     def test_ios_cache_restores_analysis_files_and_geometry_without_mac_libraries(self):
+-        self.ns.update(TARGETS={'ios'}, IOSOUT=str(Path(self.tmp.name) / 'ios'))
+-        mac, ios = Path(self.ns['out']), Path(self.ns['IOSOUT']); ios.mkdir()
+-        # Geometry's side outputs are restored; vertex and fragment side libraries are regenerated from the base MSL.
++        self.targets('ios')
++        mac, ios = Path(self.ns['out']), Path(self.ns['IOSOUT'])
+         expected = {}
+         for suffix in ('_b', '_bg0', '_bg1', '_bg2', '_bg3', '_bg4', '_bgv', '_bl0', '_bl1', '_bl3'):
+-            for d, extensions in ((mac, ('.metal', '.json')), (ios, ('.metallib', '.json'))):
++            for d, extensions in ((mac, ('.metal', '.json')), (ios, ('.json',))):
+                 for ext in extensions:
+                     p = d / ('key' + suffix + ext)
+                     p.write_text(json.dumps({'chain': 'test-chain', 'stage': 'gs'}, indent=1) if ext == '.json' else suffix + ext)
+@@ -100,37 +120,33 @@ class ShaderCache(unittest.TestCase):
+         self.assertTrue(self.ns['restore_cache']('key', 'digest'))
+         self.assertEqual({p: p.read_bytes() for p in expected}, expected)
+         self.assertEqual(list(mac.glob('*.metallib')), [])
+-        # A later dual-target run needs the missing Mac libraries, rather than accepting analysis files as a Mac hit.
+-        self.ns['TARGETS'] = {'mac', 'ios'}
+-        self.assertFalse(self.ns['restore_cache']('key', 'digest'))
++        self.assertEqual(sorted(p.name for p in ios.glob('*.metallib')), sorted('key' + s + '.metallib' for s in ('_b', '_bg0', '_bg1', '_bg2', '_bg3', '_bg4', '_bgv', '_bl0', '_bl1', '_bl3')))
++        # A later dual-target run compiles the Mac libraries from the restored sources (a hit in the compile cache when this compiler made them before)
++        self.targets('mac', 'ios'); self.compiled.clear()
++        self.assertTrue(self.ns['restore_cache']('key', 'digest'))
++        self.assertIn(('mac', 'key_b.metallib'), self.compiled)
+ 
+     def test_cache_without_analysis_source_is_a_miss(self):
+-        self.ns.update(TARGETS={'ios'}, IOSOUT=str(Path(self.tmp.name) / 'ios'))
+-        root = Path(self.ns['cache_path']('digest'))
+-        for label in ('mac', 'ios'):
+-            (root / label).mkdir(parents=True)
+-            (root / label / 'key_b.json').write_text('{}')
+-        (root / 'ios/key_b.metallib').write_bytes(b'library')
++        self.targets('ios')
++        store = self.ns['STORE']
++        store.set('shader', 'digest', {'mac': {'key_b.json': store.put(b'{}')}, 'ios': {'key_b.json': store.put(b'{}')}})
+         self.assertFalse(self.ns['restore_cache']('key', 'digest'))
+ 
+     def test_dual_target_cache_restores_only_requested_ios_libraries(self):
+-        root = Path(self.ns['cache_path']('digest'))
+-        for label in ('mac', 'ios'):
+-            (root / label).mkdir(parents=True)
+-            (root / label / 'key_b.json').write_text('{}')
+-            (root / label / 'key_b.metallib').write_bytes(label.encode())
+-        (root / 'mac/key_b.metal').write_text('MSL')
+-        self.ns.update(TARGETS={'ios'}, IOSOUT=str(Path(self.tmp.name) / 'ios'))
+-        Path(self.ns['IOSOUT']).mkdir()
++        self.targets('mac', 'ios'); self.built()
++        self.ns['publish_cache']('key', 'digest', 'rule', 'source')
++        for p in [*Path(self.ns['out']).iterdir(), *Path(self.ns['IOSOUT']).iterdir()]: p.unlink()
++        self.targets('ios'); self.compiled.clear()
+         self.assertTrue(self.ns['restore_cache']('key', 'digest'))
+         self.assertEqual((Path(self.ns['out']) / 'key_b.metal').read_text(), 'MSL')
+         self.assertFalse((Path(self.ns['out']) / 'key_b.metallib').exists())
++        self.assertEqual(self.compiled, [('ios', 'key_b.metallib')])
+ 
+ 
+ class TargetSelection(unittest.TestCase):
+     def test_mesh_compiles_only_requested_targets(self):
+         tree = ast.parse((TOOLS / 'dmsh_build.py').read_text())
+-        function = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'mesh_finish')
++        functions = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in ('mesh_finish', 'lib_dirs', 'compile_libs')]
+         with tempfile.TemporaryDirectory() as td:
+             root = Path(td); ios = root / 'ios'; ios.mkdir()
+             (root / 'vertex_b.metal').write_text('vertex source')
+@@ -140,20 +156,20 @@ class TargetSelection(unittest.TestCase):
+                 with self.subTest(targets=targets):
+                     compile_target = mock.Mock()
+                     compose = mock.Mock(return_value='mesh source')
+-                    ns: dict[str, Any] = dict(os=os, json=json, subprocess=subprocess, out=td, w=td, TARGETS=targets,
++                    ns: dict[str, Any] = dict(os=os, json=json, subprocess=subprocess, out=td, w=td, TARGETS=targets, MAC_LIBS='mac' in targets,
+                               IOSOUT=str(ios) if 'ios' in targets else None, MESH_STATS=collections.Counter(),
+                               MTL=types.SimpleNamespace(compile=compile_target), dmsh_mesh=types.SimpleNamespace(compose=compose))
+-                    exec(compile(ast.Module(body=[function], type_ignores=[]), '<mesh targets>', 'exec'), ns)
++                    exec(compile(ast.Module(body=functions, type_ignores=[]), '<mesh targets>', 'exec'), ns)
+                     ns['mesh_finish'](('vertex', 'geometry'))
+                     compose.assert_called_once_with('vertex source', 'geometry source', [36])
+                     self.assertEqual([call.args[0] for call in compile_target.call_args_list], [t for t in ('mac', 'ios') if t in targets])
+                     self.assertEqual(ns['MESH_STATS']['built'], 1)
+ 
+-    def selection(self, env):
++    def selection(self, env, platform='darwin'):
+         tree = ast.parse((TOOLS / 'dmsh_build.py').read_text())
+         start = next(i for i, n in enumerate(tree.body) if isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == 'IOSOUT' for t in n.targets))
+         end = next(i for i, n in enumerate(tree.body) if i > start and isinstance(n, ast.If) and isinstance(n.test, ast.Name) and n.test.id == 'IOSOUT')
+-        ns = dict(os=os, sys=sys)
++        ns = dict(os=os, sys=types.SimpleNamespace(platform=platform, exit=sys.exit, path=sys.path))
+         with mock.patch.dict(os.environ, env, clear=True):
+             exec(compile(ast.Module(body=tree.body[start:end], type_ignores=[]), '<target selection>', 'exec'), ns)
+         return ns['TARGETS'], ns['IOSOUT']
+@@ -163,6 +179,9 @@ class TargetSelection(unittest.TestCase):
+                                   ({'DMSH_TARGETS': 'mac', 'IOSOUT': 'phone'}, {'mac'}, None),
+                                   ({'DMSH_TARGETS': 'ios', 'IOSOUT': 'phone'}, {'ios'}, 'phone')):
+             with self.subTest(env=env): self.assertEqual(self.selection(env), (targets, ios))
++        # Off a Mac an iOS build makes only the iOS libraries unless asked for both
++        self.assertEqual(self.selection({'IOSOUT': 'phone'}, 'linux'), ({'ios'}, 'phone'))
++        self.assertEqual(self.selection({'DMSH_TARGETS': 'mac,ios', 'IOSOUT': 'phone'}, 'win32'), ({'mac', 'ios'}, 'phone'))
+ 
+     def test_invalid_targets(self):
+         for env in ({'DMSH_TARGETS': 'ios'}, {'DMSH_TARGETS': 'other'}, {'DMSH_TARGETS': ', '}):
+@@ -174,11 +193,11 @@ class StageCache(unittest.TestCase):
+         self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
+         self.root = Path(self.tmp.name)
+ 
+-    def key(self, env, version='tested Metal', sdk='SDK build'):
++    def key(self, env, version='tested Metal', sdk='SDK build', platform='darwin'):
+         def run(cmd, **kwargs):
+             text = version if 'metal' in cmd else sdk if '--show-sdk-build-version' in cmd else 'unchanged tool'
+             return subprocess.CompletedProcess(cmd, 0, text, '')
+-        with mock.patch.object(nsp.subprocess, 'run', side_effect=run), mock.patch.dict(os.environ, env, clear=True):
++        with mock.patch.object(nsp.subprocess, 'run', side_effect=run), mock.patch.dict(os.environ, env, clear=True), mock.patch.object(nsp.sys, 'platform', platform):
+             return nsp.fingerprint(*nsp.toolchain(REPO), env=env)
+ 
+     def test_selected_converter_content_invalidates_reuse(self):
+@@ -193,6 +212,7 @@ class StageCache(unittest.TestCase):
+         before = self.key(env)
+         self.assertNotEqual(before, self.key(env, version='override Metal'))
+         self.assertNotEqual(before, self.key(env, sdk='different SDK build'))
++        self.assertNotEqual(self.key(env, platform='linux'), self.key(env, version='override Metal', platform='linux'))   # off a Mac: the stand-in xcrun's iOS metal
+ 
+ 
+ class MetalPrefill(unittest.TestCase):
+@@ -201,7 +221,8 @@ class MetalPrefill(unittest.TestCase):
+         self.root = Path(self.tmp.name); self.old = self.root / 'b-old'; self.old.mkdir()
+         def compile_current(msl, air, lib): Path(lib).write_bytes(b'TESTED ' + Path(msl).read_bytes())
+         with mock.patch.object(dmsh_mtlcache, 'compiler_id', return_value='tested compiler and SDK'):
+-            self.cache = dmsh_mtlcache.Cache(str(self.root / 'cas'), {'mac': ('macosx', 'flags', compile_current)}, str(self.root))
++            self.store = dmsh_store.Store(str(self.root / 'shaders.db')); self.addCleanup(lambda: self.store.close())
++            self.cache = dmsh_mtlcache.Cache(self.store, str(self.root / 'cas'), {'mac': ('macosx', 'flags', compile_current)}, str(self.root))
+ 
+     def earlier_libraries(self, third_identity):
+         for i in range(3):
+@@ -218,6 +239,7 @@ class MetalPrefill(unittest.TestCase):
+         for identity in (None, 'other compiler'):
+             with self.subTest(identity=identity):
+                 if (self.root / 'cas').exists(): shutil.rmtree(self.root / 'cas')
++                self.store.close(); self.store = self.cache.store = dmsh_store.Store(str(self.root / f'shaders-{identity}.db'))
+                 self.earlier_libraries(identity)
+                 self.cache.fill(str(self.old))
+                 result = self.root / 'result.metallib'
+diff --git a/docs/env_switches.tsv b/docs/env_switches.tsv
+index 8ed3fdd..7c956fc 100644
+--- a/docs/env_switches.tsv
++++ b/docs/env_switches.tsv
+@@ -5,6 +5,7 @@ DM_ALIAS_WINDOWS	diagnostic	`=<MB>` logs every 30 s how much of each window of t
+ DM_ALLOW_OTHER_METAL	switch	`1` lets `own_compilers.py` build the shader libraries with a Metal compiler other than the one in `dmsh_chain.lock` (it stops otherwise, GitHub issue #242); the NSP script sets it for `--allow-other-metal`
+ DM_AOC_DIR	path	Folder of add-on content: one numbered subfolder per DLC index holding that DLC's RomFS, reported by `aoc` and mounted read-only; the app, the Mac launcher and the NSP script set it when the build has DLC
+ DM_AOC_OWNED	switch	`0` reports no add-on content even when `DM_AOC_DIR` has some, for runs without the DLC
++DM_APP_CATEGORY	path	the app's `LSApplicationCategoryType`: `build_ipa.sh` sets it from the game profile's `app_category`, and the Linux / Windows app build (`build_app_linux.py`) writes it into Info.plist
+ DM_APP_VERSION	switch	Overrides the IPA's version in `build_ipa.sh`; by default it is the packed game's display version from its control data (the update's when one is packed)
+ DM_AUDIO	switch	`1` plays audio through Core Audio, `0` uses the silent sink; real output is the default on iOS, the silent sink on the Mac (the Mac launcher sets `1`)
+ DM_AUDIO_DUMP	diagnostic	`=<file>` writes every PCM block the game appends as is (16-bit, 48 kHz, channel count as in the OpenAudioOut log), to judge whether a sound played
+@@ -12,6 +13,7 @@ DM_AUDIO_MUTE	switch	`=1` runs the real Core Audio output path (callback pacing,
+ DM_AUDREN_TRACE	diagnostic	When set, the CPU audio renderer logs every update with the number of frames rendered since the previous one
+ DM_BOOTPROF	diagnostic	When set, logs boot timing: the loader's breakdown (mapping, relocation, probes), Metal library loading, pipeline creation, texture uploads and the first present
+ DM_BUNDLE_ID	switch	Overrides the iOS app's bundle ID in `build_ipa.sh` (default `org.nxnative.<title ID in lowercase>`)
++DM_CODECS	path	`=<library>` nxnativev2's native decoders (`dmcodecs`): `shader_split.py` decodes Yaz0 with its `dm_yaz0`; unset or failing to load, in Python
+ DM_COPY_GAME_RESOURCES	switch	`NO` skips the Xcode build phase that copies the game's resources into the app (`stage_resources.sh`, on by default); `build_ipa.sh` sets it for its unsigned build, which packs them itself
+ DM_COPY_ROMFS	switch	`NO` keeps the game files out of the app, in the Xcode build phase (`stage_resources.sh`) and in the unsigned IPA of `build_ipa.sh` (on by default): `main.m` takes the validated `Documents/romfs.img` copied by `scripts/push_romfs.sh`, then a `Documents/romfs` folder; the build writes the image's identity as `romfs.id` into the app, and `main.m` uses only a matching image (`--romfs separate` of the NSP script sets this)
+ DM_CTL	diagnostic	`=<file>` (Mac): the host polls the file every 100 ms and runs each appended line: button presses, `shot`, `passdump`, `texdump`, `env KEY=VALUE`, `peek`, `memdump`, `drag` and more
+@@ -53,14 +55,17 @@ DM_HITCH_DUMP	diagnostic	`=<ms>[:<s>]`: when no frame has been presented for tha
+ DM_HLECOUNT	diagnostic	`=<file>` (`%d` = process ID) writes at exit a TSV of how many times the guest called each HLE function, zero counts included
+ DM_ICON	path	`=<image>` gives `build_ipa.sh` another app icon (default the `icon.jpg` beside the RomFS)
+ DM_IMPORTS	diagnostic	When set, logs each import the loader binds to a host function and each forced takeover
++DM_IOS_SDK	path	`=<iPhoneOS.sdk folder>` the iOS SDK the Linux / Windows app build compiles and links against (`build_app_linux.py`; default: xtool's Darwin SDK; dm/linux/README.md)
+ DM_KBD	switch	`=<text>`: the system keyboard returns that text as OK without showing an input box; unset with no window, it returns cancel
+ DM_KBD_PLAYER	switch	`own` makes the Mac keyboard player 1 on its own, with controllers from player 2 on (by default the first controller shares player 1 with the keyboard)
+ DM_KEYS	switch	Scripted input: `<seconds or f<frame>>:<key>[+key][~hold][*count/interval],…` presses buttons, sticks and `Shake` at those times
++DM_LAN	player	`1` (default where the game links nn::ldn) turns on local play with nearby devices running the game (nxnativev2's runtime, dm/rt/lan); `0` turns it off: nn::ldn answers as the host's offline stubs do
+ DM_LANG	player	Game language as a language code (default `en-US`; the iOS app sets the one the IPA was packed with)
+ DM_LAUNCHER	switch	`0` skips the iOS settings screen or the Mac settings window and starts the game at once, with the saved choices (on the Mac also `--no-launcher`)
+ DM_LINK_VTICK	switch	`0` keeps the system's display-link rate on 144 or 165 Hz Mac screens; by default the link counts only the refreshes nearest a steady 1/60 s clock
+ DM_LOADHASH	diagnostic	`=1` logs an address-independent SHA-256 per module after loading
+ DM_LONGFRAME	diagnostic	`0` turns off the long-frame log (on by default), a line for a frame over 20 ms or with GPU time over 16.7 ms that is clearly above recent frames
++DM_MAX_FPS	player	`30`, `60`, `120` or `150` sets the rate of the screen the game sees (the launcher's Frame rate, for games without `fps_target`): above 60 the vsyncs the game counts come at that rate on a 120 Hz display link, at 30 frames are capped; `0` or unset keeps the game's own pacing. Ignored where `DM_FPS_TARGET` sets the rate
+ DM_MEASURE_LOCK	path	`=<file>`: `scripts/regress.py`'s default `--lock`, the measuring lock `scripts/bench.py --lock` shares: held only while a game runs, and the harness's shader builds pause while another process holds it
+ DM_MEMSTAT	diagnostic	`=<tsv>` writes one line per second of memory accounting: footprint, Metal allocation and resident and charged memory by region class (guest, code, malloc, gpu, …)
+ DM_MEMSTAT_DUMP	diagnostic	`=<seconds>`: with `DM_MEMSTAT`, at that second writes every VM region of 1 MiB or more to `<tsv>.regions`
+@@ -174,6 +179,7 @@ DM_NVN_WAITS	diagnostic	`=1` turns on the wait ledger: every place a host or gam
+ DM_NVN_XV	switch	`0` turns off the cross-submission attachment validity ledger, which skips write-backs of colour attachments cleared before their next use (on by default, only with `DM_NVN_TBDR` on)
+ DM_NVN_ZBLOCK	diagnostic	`=1` logs (`[zb]`) the all-zero blocks per level of each ASTC texture uploaded on the CPU (magenta when drawn); `=<folder>` also writes the raw storage of the first one per format and size
+ DM_NVN_ZSKIP	switch	`0` turns off the zero-source skip, which drops a draw whose fragment shader is proven to write 0 over targets already 0 (on by default, only with `DM_NVN_TBDR` on)
++DM_NX_EXTRACT	path	`=<nx_extract executable>` a prebuilt extractor the NSP script runs instead of building it with the .NET SDK (a packaged build ships the runtime only)
+ DM_OE_SCRIPT	diagnostic	Scripted applet state changes at given seconds, `key=value@seconds,…` with keys `focus`, `opmode` and `bg` (`bg=1` / `bg=0` run the whole background round trip), e.g. `bg=1@20,bg=0@25`
+ DM_OODLE_HOST	path	The Mac host binary that `shader_split.py` runs in its Oodle tool mode to decode Trinity packs (`ONEPACK` files); set by the NSP script
+ DM_OODLE_JOB	path	`=<job file>`: the host runs the game's own Oodle decoder on every record of the job file right before `nnMain`, writes `<job file>.out` and exits (Unreal shader archives)
+@@ -182,6 +188,7 @@ DM_OODLE_SERVE	switch	`=1`: the host answers decode requests on stdin / stdout w
+ DM_OPMODE	player	The operation mode the game sees: `0` handheld, `1` console (default: the profile's `op_mode`, console unless set); read once at startup
+ DM_PAD_MERGE	switch	`=1` on the Mac merges every controller into player 1, as before, instead of giving each controller a player of its own
+ DM_PATCH_FRONT	switch	`=<bytes>`: the size of the patch area right before the module base for a long text (`BIG_TEXT`); set only by the rewriter's own rerun with the size it needs
++DM_PATCH_J	switch	`=<n>` the number of worker processes `patch_nso.py` decodes main with (default: one per core; `1` runs in one process)
+ DM_PHONE_MOTION	switch	On iOS, whether the phone's own device motion drives player 1's six-axis sensor: `auto` (default) while no controller supplies fresh motion, `1` phone only, `0` never; each source keeps its own orientation
+ DM_PREEMPT	switch	`0` / `1` overrides the profile's `core_preempt`: also check already-runnable higher-priority peers on the caller's core after every thread SVC
+ DM_PRELOAD	diagnostic	Set: on the Mac, runs the host's early background loading (`dm_host_preload_start`) as the iOS app does, to exercise that path
+@@ -261,6 +268,8 @@ DM_SPIN	switch	`0` makes the rewriter's spin gate return at once, so guest poll
+ DM_SPIN_LIST	diagnostic	`=1` makes `patch_nso.py` print every guest poll loop it found and sends through a spin gate
+ DM_SPIN_POLL	switch	`=<µs>`: how long a spin-gate wait polls before it sleeps with the yield back-off (default 2000; `0` yields on every pass)
+ DM_SVC	diagnostic	`=1` logs memory SVCs (`SetHeapSize`, `MapMemory`, `Map`/`UnmapPhysicalMemory`) with their addresses and sizes
++DM_SWIFT_OBJECT	path	`=<object file>` the app's Swift sources compiled ahead of time (one arm64 iOS object): the Linux / Windows app build links it instead of running swiftc
++DM_SWIFT_RESOURCES	path	`=<folder>` Xcode's Swift resource folder (the toolchain's `usr/lib/swift`) for swiftc in the Linux / Windows app build (default: beside the SDK, else xtool's)
+ DM_SYMCHECK	diagnostic	`=1` checks every hashed module symbol lookup against a linear search and logs a red line for each mismatch
+ DM_TEAM_ID	switch	Apple team ID for the per-game Xcode project, used when `--team-id` / `TEAM_ID` is not given; `build_ipa.sh` uses the placeholder `0000000000` (unsigned) when unset
+ DM_TEMP	path	Temporary storage folder (default `$DM_ROOT/run/platform/temp`); stand-in system data goes in `<DM_TEMP>_sysdata`; the Mac launcher, the iOS app and the NSP script set it
+@@ -298,5 +307,6 @@ DM_WATCH_STALL	diagnostic	`=<s>`: when the frame loop makes no progress for that
+ DM_WINDOW	switch	When set (to any value, `0` included) opens a Mac window with keyboard and controller input; unset runs headless with the guest on the current thread; the Mac launcher sets it
+ DM_XCODE_DERIVED_DATA	path	Xcode derived data folder for `build_ipa.sh` (default `$W/build/ios/xcode-dd`); the NSP script points it into the game's build folder
+ DM_XCODE_PROJECT_DIR	path	Folder of the per-game Xcode project that `build_ipa.sh --prepare-xcode` makes (default `$W/xcode`); the NSP script sets it
++DM_XCRUN_DEFER	switch	`1` outside macOS: `dm/linux/bin/xcrun` writes each shader's Metal source and compile request instead of compiling it, and the device compiles them before the game (the launcher's Preparing shaders, `nvn_mtl.m`)
+ DM_XV_FILE	path	File where the attachment validity ledger keeps the keys it disabled after a violation, read at the next launch
+ DM_YIELD_BACKOFF	switch	`0` turns off the yield back-off; `=<cap µs>[:<start µs>]` sets its sleep cap and the run of yields after which it starts (default 250:2000)
+diff --git a/docs/frontends.md b/docs/frontends.md
+index a22b941..d25dba7 100644
+--- a/docs/frontends.md
++++ b/docs/frontends.md
+@@ -42,6 +42,7 @@ A built app carries the settings its game supports, as the iPhone app's settings
+ - `base` (optional, render scale only): `{"docked": [w, h], "handheld": [w, h]}`, the 3D views' size that the scale multiplies, so a front end can show 0.75 as 1200×675 docked. It comes from the game's profile (`render_base`), and only some games have it.
+ - `level` (optional): `basic` marks a setting to show first, for a front end that shows a short list and puts the rest behind a second step. Without it, the front end decides.
+ - `needs` (optional): `<VAR>=<value>` makes the row a sub-setting of the row that sets `<VAR>`, drawn only while that row has that value (Rumble strength only while rumble is on). A row naming a variable the list does not have stays drawn.
++- `icon`, `help` (optional): an SF Symbol for the row and a longer explanation of the setting, which the iPhone's settings screen shows behind an ⓘ. A front end without them draws its own.
+ - An app without the file has no settings to offer: start it as it is.
+ 
+ **Compatibility.** [launcher.schema.json](launcher.schema.json) describes the file as a JSON Schema, so a front end can check it and generate its types from it. `schema` is 1, and schema 1 grows only by optional fields: a reader ignores fields it does not know, draws sections it does not know, and a field never changes its meaning. A new `kind` would be schema 2, since a reader cannot draw a kind it does not know. A list written before the field existed has no `schema` and is 1. In `settings.tsv`, the optional fields come from the last column, `meta` (`key=value` pairs separated by `;`); a new key is added in `settings.py`'s `META`, here and in the schema together, and `test_launcher_settings.py` fails when the three disagree.
+diff --git a/docs/launcher.schema.json b/docs/launcher.schema.json
+index 4bb97df..5ff5d75 100644
+--- a/docs/launcher.schema.json
++++ b/docs/launcher.schema.json
+@@ -31,7 +31,9 @@
+         "base": {"description": "Render scale only: the 3D views' size the scale multiplies, docked and handheld, from the game's profile; absent for most games.", "type": "object", "required": ["docked", "handheld"],
+                  "properties": {"docked": {"$ref": "#/$defs/size"}, "handheld": {"$ref": "#/$defs/size"}}},
+         "level": {"description": "basic: a setting a front end shows first. Without it, the front end decides.", "const": "basic"},
+-        "needs": {"description": "<VAR>=<value>: a sub-setting, drawn only while the row that sets <VAR> has that value. A row naming a variable this list does not have stays drawn.", "type": "string", "pattern": "^DM_[A-Z0-9_]+=[^;=]+$"}
++        "needs": {"description": "<VAR>=<value>: a sub-setting, drawn only while the row that sets <VAR> has that value. A row naming a variable this list does not have stays drawn.", "type": "string", "pattern": "^DM_[A-Z0-9_]+=[^;=]+$"},
++        "icon": {"description": "An SF Symbol for the row (the iPhone's settings screen); a reader without it draws its own.", "type": "string"},
++        "help": {"description": "What the setting does, at more length than the note (the iPhone's settings screen shows it behind an ⓘ).", "type": "string"}
+       },
+       "allOf": [
+         {"if": {"properties": {"kind": {"const": "choice"}}}, "then": {"required": ["options"]}},
+diff --git a/docs/playing.md b/docs/playing.md
+index bdf4378..fece850 100644
+--- a/docs/playing.md
++++ b/docs/playing.md
+@@ -34,7 +34,7 @@ English by default. Pick another when packing with `--language` (`-l`), by code
+ 
+ ## Settings in a file
+ 
+-Lines like `DM_OPMODE=0` (handheld mode: lower resolution, higher frame rate) in `Documents/env.txt` win over the settings screen, which then shows them greyed out ([the full list](settings.md#settings-in-a-file)). `DM_FPS_TARGET=30` keeps Breath of the Wild, Tears of the Kingdom, Octopath Traveler 0 and Octopath Traveler II at their original 30 fps, which saves battery; `DM_PRESENT_INTERVAL=game` does the same for Monster Train 2. `DM_SHOW_FPS=1` shows the frame rate at the top left (`--show-fps` when packing turns it on from the start). `DM_LAUNCHER=0` skips the settings screen.
++Lines like `DM_OPMODE=0` (handheld mode: lower resolution, higher frame rate) in `Documents/env.txt` win over the settings screen, which then shows them greyed out ([the full list](settings.md#settings-in-a-file)). `DM_FPS_TARGET=30` keeps Breath of the Wild, Tears of the Kingdom, Octopath Traveler 0 and Octopath Traveler II at their original 30 fps, which saves battery; `DM_PRESENT_INTERVAL=game` does the same for Monster Train 2. On the other games the settings screen's **Frame rate** (`DM_MAX_FPS`: 30, 60, 120 or 150) sets the rate of the screen the game sees; a game whose logic counts frames then runs slower or faster. `DM_SHOW_FPS=1` shows the frame rate at the top left (`--show-fps` when packing turns it on from the start). `DM_LAUNCHER=0` skips the settings screen.
+ 
+ ## On the Mac
+ 
+diff --git a/docs/settings.md b/docs/settings.md
+index de8d980..cd41389 100644
+--- a/docs/settings.md
++++ b/docs/settings.md
+@@ -23,6 +23,8 @@ A Mac app carries the same list (`Contents/Resources/dm/launcher.json`), without
+ 
+ Games whose speed the app controls (Breath of the Wild, Tears of the Kingdom and a few others) offer **30 fps** or **60 fps**. 60 is smoother; 30 is what the Switch ran and uses less power, so the phone stays cooler and the battery lasts longer. The game runs at real speed either way.
+ 
++The other games offer a cap instead (`DM_MAX_FPS`): **Game default** keeps the game's own pacing, and **30**, **60**, **120** or **150 fps** set the rate of the screen the game sees. A game whose logic counts frames then runs slower or faster; 120 and 150 only matter on a ProMotion screen.
++
+ ### Render scale
+ 
+ The size of the 3D picture, from 50 to 100 %. Below 100 % the size is fixed there and the game's own dynamic resolution is off; 100 % keeps the game's own. Lower can be lighter on the GPU but is blurrier; the HUD and text keep their sharpness. Only games the app can scale offer it.
 diff --git a/scripts/build_ipa_from_nsp.py b/scripts/build_ipa_from_nsp.py
-index ebef569..8e0129a 100755
+index 8b67465..c6bb365 100755
 --- a/scripts/build_ipa_from_nsp.py
 +++ b/scripts/build_ipa_from_nsp.py
-@@ -351,6 +351,10 @@ def rmtree(p):
+@@ -371,6 +371,10 @@ def rmtree(p):
  def build_nx_extract(repo, work, logs, env):
      """Build nx_extract into <work>/tools/nx_extract/. It is built in a temporary folder and copied over: with an apostrophe in the output path (e.g. "Bowser's Fury") MSBuild's conditions break,
      LibHac.dll and the executable are not copied, and the build still reports success"""
@@ -2797,7 +3225,7 @@ index ebef569..8e0129a 100755
      nx = work / 'tools/nx_extract/nx_extract'
      with tempfile.TemporaryDirectory(prefix='nx_extract_') as t:
          run(['dotnet', 'build', repo / 'dm/tools/nx_extract', '-c', 'Release', '-o', t, '-v', 'quiet', '-nologo'], logs / 'nx_extract_build.log', env=env)
-@@ -482,6 +486,7 @@ def pick_nsps(fam, have, versions):
+@@ -551,6 +555,7 @@ def extract_bytes(picks, clones):
  
  
  def can_clone(d):   # whether this volume supports APFS clones (nx_extract uses them to save space; without them it writes full copies)
@@ -2805,27 +3233,20 @@ index ebef569..8e0129a 100755
      a, b = d / '.clone_test', d / '.clone_test2'
      try:
          a.write_bytes(b'x'); rmtree(b)
-@@ -769,19 +774,53 @@ def profile_files(g):   # every file of the game profile (game.tsv and its table
+@@ -860,21 +865,48 @@ def profile_files(g):   # every file of the game profile (game.tsv and its table
      return sorted(p for p in g.dir.iterdir() if p.is_file() and p.name not in out)
  
  
-+STAGE_MADE = {'c1_full.tsv', 'cb_extent.tsv'}   # what the iOS shaders' stage writes into the profile (after the split, and after its own key)
-+
-+
 +def translator_files(xlate):   # the translator's binaries by content: its folder holds links into the app's unpacked bundle, which moves with every app version
 +    return sorted({p.resolve() for p in xlate.parent.iterdir() if p.suffix in ('.dll', '.json')}, key=lambda p: p.name)
-+
-+
-+def stage_profile_files(g):   # the profile files a stage's key covers: the iOS shaders' stage's own tables are left out, else each build would see them change
-+    return [p for p in profile_files(g) if p.name not in STAGE_MADE]
 +
 +
  # ---- Steps ----
  def check_prereqs(env, xlate, mac=False):   # mac: a Mac-only build (PLATFORM 'mac'), which needs no xcodegen and compiles shaders only for macOS
      missing = [m for m in ('lz4.block', 'capstone', 'fontTools') if not _importable(m)] + ([] if _importable('compression.zstd') or _importable('backports.zstd') else ['backports.zstd'])   # zstd: built in from Python 3.14
      if missing: raise BuildError(f'the current Python ({sys.executable}) is missing modules: {", ".join(missing)} (pip install lz4 capstone fonttools backports.zstd; backports.zstd only before Python 3.14)')
--    tools = {'xcodebuild': 'Xcode', 'xcodegen': 'brew install xcodegen', 'dotnet': '.NET SDK 10', 'zstd': 'brew install zstd', 'spirv-cross': 'brew install spirv-cross', 'make': 'Xcode'}
-+    if sys.platform == 'darwin': tools = {'xcodebuild': 'Xcode', 'xcodegen': 'brew install xcodegen', 'dotnet': '.NET SDK 10', 'zstd': 'brew install zstd', 'spirv-cross': 'brew install spirv-cross', 'make': 'Xcode'}
+-    tools = {'xcodebuild': 'Xcode', 'xcodegen': 'brew install xcodegen', 'dotnet': '.NET SDK 10', 'zstd': 'brew install zstd', 'make': 'Xcode'}
++    if sys.platform == 'darwin': tools = {'xcodebuild': 'Xcode', 'xcodegen': 'brew install xcodegen', 'dotnet': '.NET SDK 10', 'zstd': 'brew install zstd', 'make': 'Xcode'}
 +    else: tools = {'dotnet': '.NET 10', 'spirv-cross': 'spirv-cross', 'make': 'make', 'clang': 'clang', 'ld64.lld': 'lld', 'wine': 'wine (runs Apple\'s Metal Developer Tools for Windows)'}   # Linux: dm/linux/README.md
      if mac: del tools['xcodegen']
      gone = [f'{t} ({how})' for t, how in tools.items() if not shutil.which(t, path=env['PATH'])]
@@ -2837,6 +3258,8 @@ index ebef569..8e0129a 100755
 +        r = subprocess.run([sys.executable, str(xlate.parents[3] / 'ios/tools/build_app_linux.py'), '--find-sdk'], env=env, capture_output=True, text=True)
 +        if r.returncode: raise BuildError(f'{r.stderr.strip()} (dm/linux/README.md)')
      if not xlate.exists(): raise BuildError(f'the shader translator is missing from the repository: {xlate}')
+     sc = env.get('SPIRV_CROSS', str(xlate.parent.parent / 'spirv_cross_bin/spirv-cross'))
+     if not shutil.which(sc, path=env.get('PATH')): raise BuildError(f'spirv-cross is missing or not executable: {sc}')
  
  
 +def xlate_launcher(xlate, d):
@@ -2860,7 +3283,7 @@ index ebef569..8e0129a 100755
  def _importable(m):
      try: __import__(m); return True
      except ImportError: return False
-@@ -932,18 +971,19 @@ def glslc_done(d):   # capture files written whole: a GLSLC output (magic 0x1986
+@@ -1050,18 +1082,19 @@ def glslc_done(d):   # capture files written whole: a GLSLC output (magic 0x1986
      return out
  
  
@@ -2883,39 +3306,7 @@ index ebef569..8e0129a 100755
      host = repo / 'dm/host'
      run(['make', '-s', f'GAME={g.id}', f'gen/{g.id}/game_profile.h', 'gen/vpx/libvpx.a'], logs / 'mac_host_make.log', env=env, cwd=host)
      dry = subprocess.run(['make', '-n', '-B', f'GAME={g.id}', 'dmhost'], env=env, cwd=host, capture_output=True, text=True)
-@@ -1259,15 +1299,18 @@ def data_rows(b):   # a table's data rows (without # comment lines: the header c
- 
- def split_shaders(py, repo, roms, mains, pkg, env, logs, g, provisional=False, oodle=None):
-     """The shader split into pkg, checked against the profile's tables. The package is reused when the tools, the profile and each version's main, RomFS (paths and sizes) and run-time capture
--    are as at the last successful split. Returns the package's content key, the iOS shaders' input (None for a provisional profile or damaged files, which never reuse them): a split that runs
-+    are as at the last successful split. Returns the package's content key, the iOS shaders' input (None for damaged files, which never reuse them): a split that runs
-     again because a reader of another engine changed writes the same package, and the iOS shaders stay reused.
-+    A provisional profile's tables are the split's own output: its key is taken over the profile as it is (without the iOS shaders' stage's own tables: stage_profile_files), and the key written
-+    after a split is taken once the new tables are in it, so the next build with the same game files finds the same key (a profile surveyed again has other tables and splits again).
-     oodle: for a game with Trinity packs (Pokémon Legends: Z-A; profile_guess.py shader_sources), a function that builds the Mac host and returns the split's DM_OODLE_HOST / DM_OODLE_MODULES; called only when the split runs"""
-     names = ('shader_map.tsv', 'shader_facts.tsv', 'shader_pairs.tsv')
-     PROG.stage('shader split', step='checking the inputs')   # then a spinner: shader_split.py writes the package and the tables only at the end
-     kf = pkg.with_name(pkg.name + '.key')
--    key = None if provisional or ALLOW_DAMAGED else fingerprint(('files', tool_files(repo)), ('files', profile_files(g)),
-+    def split_key(): return fingerprint(('files', tool_files(repo)), ('files', stage_profile_files(g)),
-         *[x for r, m in zip(roms, mains) for x in (('files', [m]), ('tree', r), ('files', sorted((r.parent / 'glslc_capture').glob('*.glslc'))),
-                                                    ('files', sorted((r.parent / 'ue_shaders').glob('*.ushaderbytecode'))))])
-+    key = None if ALLOW_DAMAGED else split_key()
-     if key and pkg.is_dir() and (note := reused(kf, key)) is not None:
-         PROG.end(f'{note}, reused (inputs unchanged)'); return package_key(pkg)
-     if oodle:   # the packs are decoded by the game's own Oodle in the Mac host (dm/host/hle_oodle.c)
-@@ -1278,8 +1321,9 @@ def split_shaders(py, repo, roms, mains, pkg, env, logs, g, provisional=False, o
-     m = re.search(r'shaders: (\d+) \(', (logs / 'shader_split.log').read_text(errors='replace'))
-     if m and m.group(1) == '0':   # dmsh_build.py would make no library, and the iOS shader step stop with no word of why
-         raise BuildError('the shader split found no shaders in main or the RomFS: the game keeps them in a form shader_split.py does not read; locate them (docs/agents) and add a reader')
--    if provisional:   # a provisional profile takes the tables as they come
-+    if provisional:   # a provisional profile takes the tables as they come; its key covers them as they are now
-         for n in names: shutil.copyfile(tmp / 'tables' / n, g.table(n))
-+        if key: key = split_key()
-     else:
-         # Data rows byte-identical to the profile's = the same game files the tables were built from; if not, stop (the profile's tables are left alone). Only data rows are compared: the header of Engage's profile tables was written by an older shader_split
-         diff = [n for n in names if data_rows((tmp / 'tables' / n).read_bytes()) != data_rows(g.table(n).read_bytes())]
-@@ -1318,9 +1362,17 @@ class ShaderWatch:
+@@ -1640,9 +1673,17 @@ class ShaderWatch:
  
      def __call__(self):
          if not self.w:   # dmsh_build.py's temporary folder: the dmsh_* under WORK made since it started
@@ -2934,49 +3325,47 @@ index ebef569..8e0129a 100755
          if self.t1 is None:
              self.hits |= self.written(self.pos.keys() - self.hits, self.t0 - 2)
              if len(self.hits) + ext['.bin'] < self.n and not ext['.spv'] and not ext['.metal']:
-@@ -1334,8 +1386,9 @@ class ShaderWatch:
-                 'note': f'{ext[".bin"]:,} not cached' if ext['.bin'] else ''}
+@@ -1663,6 +1704,8 @@ def spirv_cross(repo, env=None):   # resolve the same selection the shader tools
  
  
--def toolchain():   # the compilers' versions, part of the shader stages' keys
--    return ('cmd', ['xcodebuild', '-version']), ('cmd', ['spirv-cross', '--revision'])
-+def toolchain():   # the compilers' versions, part of the shader stages' keys (Linux: the metal of dm/linux/bin/xcrun, Apple's Windows tools under wine)
-+    xc = ('cmd', ['xcodebuild', '-version']) if sys.platform == 'darwin' else ('cmd', ['xcrun', '-sdk', 'iphoneos', 'metal', '--version'])
-+    return xc, ('cmd', ['spirv-cross', '--revision'])
- 
- 
- def build_shaders(py, repo, sh, xlate, env, logs, g, pkg_key=None, mac=False):
-@@ -1353,7 +1406,7 @@ def build_shaders(py, repo, sh, xlate, env, logs, g, pkg_key=None, mac=False):
-     libs, kf, kmac = out / f'b-{chain}', ios / f'b-{chain}.key', sh / f'mac-b-{chain}.key'
+ def toolchain(repo, env=None):   # Metal is a separate Xcode download: its version and SDK must invalidate reuse too
++    if sys.platform != 'darwin':   # Linux, Windows: the metal of dm/linux/bin/xcrun (Apple's Metal Developer Tools for Windows under wine), which builds only the iOS libraries
++        return (('files', [spirv_cross(repo, env)]), *(('cmd', ['xcrun', '-sdk', 'iphoneos', tool, '--version']) for tool in ('metal', 'metallib')))
+     return (('cmd', ['xcodebuild', '-version']), ('files', [spirv_cross(repo, env)]),
+             *(('cmd', ['xcrun', '-sdk', sdk, *args]) for sdk in ('macosx', 'iphoneos')
+               for args in (['metal', '--version'], ['metallib', '--version'], ['--show-sdk-version'], ['--show-sdk-build-version'])))
+@@ -1684,7 +1727,7 @@ def build_shaders(py, repo, sh, xlate, env, logs, g, pkg_key=None, mac=False):
+     if not pso_pairs.is_file(): pso_pairs = sh / 'pso_pairs.tsv'   # the split's copy is a shader input too (vs_pad)
      if pkg_key:
          PROG.set(step='checking the inputs')
--        key = fingerprint(pkg_key, ('files', chain_files(repo)), ('stat', xlate.parent), ('files', profile_files(g)), *toolchain(), str(xlate),
-+        key = fingerprint(pkg_key, ('files', chain_files(repo)), ('files', translator_files(xlate)), ('files', stage_profile_files(g)), *toolchain(), str(xlate),
+-        key = fingerprint(pkg_key, ('files', chain_files(repo)), ('stat', xlate.parent), ('files', profile_files(g)), ('files', [pso_pairs]), *toolchain(repo, env), str(xlate),
++        key = fingerprint(pkg_key, ('files', chain_files(repo)), ('files', translator_files(xlate)), ('files', profile_files(g)), ('files', [pso_pairs]), *toolchain(repo, env), str(xlate),
                            {k: env.get(k) for k in ('XLATE_DEBUG', 'XLATE_REDUCED')}, env=env)
          note = next((n for k in ((kmac, kf) if mac else (kf,)) if (n := reused(k, key)) is not None), None)
          # the libraries are the last build's, so are tables that name their stamp; a missing or stale one is made from that build's Mac outputs, and without them the step runs again
-@@ -1364,9 +1417,10 @@ def build_shaders(py, repo, sh, xlate, env, logs, g, pkg_key=None, mac=False):
-     if not mac: rmtree(kf)
-     try: PROG.watch(ShaderWatch(g, libs, Path(env['WORK'])))
-     except Exception: pass   # progress never stops the build (a missing table is dmsh_build.py's to report)
--    benv = dict(env, XLATE=str(xlate), IOSOUT=str(ios))
-+    benv = dict(env, XLATE=str(xlate), IOSOUT=str(ios), DM_XCRUN_FAILED=str(sh / 'cache' / 'xcrun_failed'))
+@@ -1698,9 +1741,10 @@ def build_shaders(py, repo, sh, xlate, env, logs, g, pkg_key=None, mac=False):
+     # The Metal work follows from what the build produces: an iPhone build needs only the iOS libraries (the macOS
+     # metallibs are about half of the compile and never enter the IPA), a Mac build only the Mac's, and a build that
+     # wants both compiles both. The Mac sources and reflection are written either way (c1_full / cb_extent come from them).
+-    benv = dict(env, XLATE=str(xlate), IOSOUT=str(ios), DMSH_TARGETS='mac' if mac else 'ios')
++    benv = dict(env, XLATE=str(xlate), IOSOUT=str(ios), DMSH_TARGETS='mac' if mac else 'ios', DM_XCRUN_FAILED=str(sh / 'cache' / 'xcrun_failed'))
+     if ALLOW_OTHER_METAL: benv['DM_ALLOW_OTHER_METAL'] = '1'
      if mac: del benv['IOSOUT']   # dmsh_build.py builds the iOS libraries only with IOSOUT
--    run([py, repo / 'dm/gfx/tools/own_compilers.py', sh / 'pkg', sh / 'cache'], log, env=benv)   # dmsh_build.py with this Mac's Metal compiler and spirv-cross
 +    # dmsh_build.py with this Mac's Metal compiler and spirv-cross; elsewhere the xcrun stand-in remembers failed compiles in the shader cache, not in WORK (deleted after each build)
-+    run([py, repo / 'dm/gfx/tools/own_compilers.py', sh / 'pkg', sh / 'cache'], log, env=benv)
+     run([py, repo / 'dm/gfx/tools/own_compilers.py', sh / 'pkg', sh / 'cache'], log, env=benv)
      PROG.watch(None)
      if not chain_tables(py, repo, sh, env, logs, g, chain): raise BuildError(f'no stamped Mac shader outputs in {sh / "cache" / f"b-{chain}"} (inputs.tsv): dmsh_build.py did not finish a full build')
-     what = 'Mac' if mac else 'iOS'
-@@ -1599,6 +1653,7 @@ def main(args=None):
-     if not want_lang: raise BuildError(f'unknown game language {lang_in!r}; give one of {language_list([c for c, _ in nacp.LANGUAGES])}, by code or by name')
+@@ -2127,6 +2171,9 @@ def main(args=None):
      env = dict(os.environ, PATH=os.pathsep.join(TOOL_PATHS + [os.environ.get('PATH', '/usr/bin:/bin:/usr/sbin:/sbin')]))
      env.setdefault('USER', getpass.getuser())   # xcodegen fails without USER (Couldn't find current username)
-+    if sys.platform != 'darwin': env['PATH'] = os.pathsep.join([str(repo / 'dm/linux/bin'), env['PATH']])   # xcrun for the shader chain's metal (dm/linux/README.md)
+     configure_dotnet(env)
++    if sys.platform != 'darwin':   # xcrun for the shader chain's metal, and the bundled spirv-cross in place of the in-repo macOS build (dm/linux/README.md)
++        env['PATH'] = os.pathsep.join([str(repo / 'dm/linux/bin'), env['PATH']])
++        if not env.get('SPIRV_CROSS') and (sc := shutil.which('spirv-cross', path=env['PATH'])): env['SPIRV_CROSS'] = os.environ['SPIRV_CROSS'] = sc
      env.setdefault('J', str(os.cpu_count() or 8))   # shader_split.py's and dmsh_build.py's workers (their default is 8)
      py = sys.executable
      app, fam = scan_nsps(nsp_dir)
-@@ -1666,6 +1721,7 @@ def main(args=None):
+@@ -2196,6 +2243,7 @@ def main(args=None):
      env.update(DM_GAME=g.id, DM_ROOT=str(work), WORK=str(work / 'tmp'))
      logs = work / 'logs'
      check_prereqs(env, xlate, mac)
@@ -2984,7 +3373,7 @@ index ebef569..8e0129a 100755
      picks = pick_nsps(fam, have, versions)
  
      ex = work / 'extract'; ex.mkdir(parents=True, exist_ok=True); (work / 'tmp').mkdir(exist_ok=True)
-@@ -1789,10 +1845,14 @@ def main(args=None):
+@@ -2356,10 +2404,14 @@ def main(args=None):
          return
      watch = IpaWatch(repo, work / 'ipa', out_ipa)
      PROG.stage('app build', poll=watch.poll, step='starting')   # build_ipa.sh's "pack IPA" line starts the stage "IPA pack"
